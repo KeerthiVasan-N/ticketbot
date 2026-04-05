@@ -236,16 +236,18 @@ async function main() {
     console.log(`[${ts()}] Unmarked — pick a new element.`);
   });
 
-  await page.exposeFunction('__tb_cancel', () => {
+  await page.exposeFunction("__tb_cancel", () => {
     if (intervalId) {
       clearInterval(intervalId);
       intervalId = null;
     }
-    clicked    = false;
+    clicked = false;
     isChecking = false;
     markedSelector = null;
-    markedText     = null;
-    console.log(`[${ts()}] Monitoring CANCELLED — pick a new element to start again.`);
+    markedText = null;
+    console.log(
+      `[${ts()}] Monitoring CANCELLED — pick a new element to start again.`,
+    );
   });
 
   await page.exposeFunction("__tb_start", () => {
