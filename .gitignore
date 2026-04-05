@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Playwright browser binaries
+/playwright/.local-browsers/
+
+# Browser profiles (contain login cookies — never commit these)
+profiles/
+
+# WIP backups
+*.wip
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment variables
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+# Documentation
+doc
+

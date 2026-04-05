@@ -1,0 +1,14 @@
+{
+  "name": "ticketbot",
+  "version": "1.0.0",
+  "description": "Monitor district.in IPL ticket booking page and click 'Book tickets' the instant it appears.",
+  "main": "monitor.js",
+  "scripts": {
+    "start": "node monitor.js"
+  },
+  "dependencies": {
+    "playwright": "^1.44.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}
