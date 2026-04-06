@@ -90,6 +90,13 @@ const PICKER_SCRIPT = `
       padding:7px 0; cursor:pointer; font-size:13px; width:100%; font-weight:bold; margin-top:6px;
     }
     #__tb_cancel:hover { background:#e94560; color:#fff; }
+    #__tb_sep { border:0; border-top:1px solid #333; margin:10px 0 8px; }
+    #__tb_double {
+      background:none; border:1px solid #ffc107; color:#ffc107; border-radius:6px;
+      padding:8px 0; cursor:pointer; font-size:13px; width:100%; font-weight:bold;
+    }
+    #__tb_double:hover:not(:disabled) { background:#ffc107; color:#111; }
+    #__tb_double:disabled { background:#444; color:#777; cursor:default; border-color:#555; }
   \`;
   document.head.appendChild(style);
 
@@ -103,6 +110,8 @@ const PICKER_SCRIPT = `
     <button id="__tb_pick">Pick Element</button>
     <button id="__tb_start" disabled>Start Monitoring</button>
     <button id="__tb_cancel" style="display:none">⏹ Cancel Monitoring</button>
+    <hr id="__tb_sep">
+    <button id="__tb_double">⚡ Double Click</button>
   \`;
   document.body.appendChild(panel);
 
@@ -111,6 +120,7 @@ const PICKER_SCRIPT = `
   const unmarkBtn = document.getElementById('__tb_unmark');
   const pickBtn   = document.getElementById('__tb_pick');
   const cancelBtn = document.getElementById('__tb_cancel');
+  const doubleBtn = document.getElementById('__tb_double');
   const titlebar  = document.getElementById('__tb_titlebar');
 
   // ── Drag to move ─────────────────────────────────────────────────────────
@@ -279,6 +289,20 @@ const PICKER_SCRIPT = `
     cancelBtn.style.display = 'none';
     window.__tb_cancel();
   });
+
+  // ── Double Click button ──────────────────────────────────────────────────
+  doubleBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    info.innerHTML = '⚡ <b>Double Click</b> active!<br>Click any <b>Book tickets</b> button yourself — bot will auto-click on the next page.';
+    btn.disabled = true;
+    pickBtn.disabled = true;
+    doubleBtn.disabled = true;
+    doubleBtn.style.background = '#ffc107';
+    doubleBtn.style.color = '#111';
+    cancelBtn.style.display = 'none';
+    unmarkBtn.style.display = 'none';
+    window.__tb_doubleClick();
+  });
 })();
 `;
 
@@ -331,6 +355,123 @@ async function main() {
     console.log(
       `[${ts()}] Monitoring CANCELLED — pick a new element to start again.`,
     );
+  });
+
+  await page.exposeFunction("__tb_doubleClick", async () => {
+    console.log(`[${ts()}] ⚡ Double Click mode activated`);
+    console.log(
+      `  Click any "Book tickets" card — bot will auto-click on the detail page.\n`,
+    );
+
+    // Register in-browser auto-clicker for maximum speed (runs before page JS)
+    await context.addInitScript(() => {
+      // Only run on detail pages (not the listing page)
+      if (location.pathname === "/events/ipl-ticket-booking") return;
+
+      let done = false;
+      let observer;
+      let fallbackInterval;
+
+      function tryClick() {
+        if (done) return true;
+        const buttons = document.querySelectorAll(
+          'button, a[role="button"], [role="button"]',
+        );
+        for (const btn of buttons) {
+          const text = (btn.innerText || btn.textContent || "")
+            .trim()
+            .toLowerCase();
+          const aria = (btn.getAttribute("aria-label") || "").toLowerCase();
+          if (text.includes("book ticket") || aria.includes("book ticket")) {
+            const rect = btn.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              console.log("[TicketBot] Found button:", text, "| aria:", aria);
+              btn.click();
+              btn.dispatchEvent(
+                new MouseEvent("click", {
+                  bubbles: true,
+                  cancelable: true,
+                  view: window,
+                }),
+              );
+              btn.dispatchEvent(
+                new PointerEvent("pointerdown", { bubbles: true }),
+              );
+              btn.dispatchEvent(
+                new PointerEvent("pointerup", { bubbles: true }),
+              );
+              btn.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+              btn.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+              console.log('[TicketBot] ✅ Auto-clicked "Book Tickets"!');
+              done = true;
+              if (observer) observer.disconnect();
+              if (fallbackInterval) clearInterval(fallbackInterval);
+              return true;
+            }
+          }
+        }
+        return false;
+      }
+
+      function setup() {
+        if (tryClick()) return;
+        observer = new MutationObserver(() => tryClick());
+        observer.observe(document.body || document.documentElement, {
+          childList: true,
+          subtree: true,
+        });
+        fallbackInterval = setInterval(() => {
+          if (tryClick()) {
+            clearInterval(fallbackInterval);
+            if (observer) observer.disconnect();
+          }
+        }, 30);
+        setTimeout(() => {
+          if (observer) observer.disconnect();
+          if (fallbackInterval) clearInterval(fallbackInterval);
+        }, 30000);
+      }
+
+      if (document.body) {
+        setup();
+      } else {
+        document.addEventListener("DOMContentLoaded", setup);
+      }
+    });
+
+    // Node-side fallback: watch for URL change then use Playwright locator
+    const originalUrl = page.url();
+    (async () => {
+      try {
+        await page.waitForURL((url) => url.toString() !== originalUrl, {
+          timeout: 120_000,
+        });
+        console.log(`[${ts()}] 📄 Navigated to: ${page.url()}`);
+        // Playwright locator auto-waits for the element to appear and be actionable
+        const bookBtn = page
+          .locator("button[aria-label='Book Tickets']")
+          .first();
+        await bookBtn.click({ timeout: 10_000 });
+        console.log(
+          `[${ts()}] ✅ SECOND CLICK (Playwright): "Book Tickets" clicked!`,
+        );
+        await sendWhatsAppAlert(`Queue entered at ${ts()}`);
+      } catch (err) {
+        console.log(`[${ts()}] Playwright fallback: ${err.message}`);
+        try {
+          await page
+            .locator("button", { hasText: "Book Tickets" })
+            .first()
+            .click({ timeout: 5_000 });
+          console.log(`[${ts()}] ✅ SECOND CLICK (text fallback): clicked!`);
+          await sendWhatsAppAlert(`Queue entered at ${ts()}`);
+        } catch (err2) {
+          console.error(
+            `[${ts()}] ❌ Double Click second click failed: ${err2.message}`,
+          );
+        }
+      }
+    })();
   });
 
   await page.exposeFunction("__tb_start", () => {
@@ -636,7 +777,10 @@ async function main() {
     "  Step 3 — When 'Book tickets' appears (countdown ends), bot clicks it.",
   );
   console.log(
-    "  Step 4 — Bot auto-clicks 'Book Tickets' on the detail page to enter queue.\n",
+    "  Step 4 — Bot auto-clicks 'Book Tickets' on the detail page to enter queue.",
+  );
+  console.log(
+    "\n  OR use ⚡ Double Click — you click the match card yourself, bot handles the rest.\n",
   );
 
   await loadPage();
