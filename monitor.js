@@ -514,9 +514,72 @@ async function main() {
           clearInterval(intervalId);
           const stamp = ts();
           console.log(
-            `[${stamp}] CLICKED: "${result.text || markedText}" (score ${result.score})`,
+            `[${stamp}] ✅ FIRST CLICK: "${result.text || markedText}" (score ${result.score})`,
           );
-          await sendWhatsAppAlert(`"${markedText}" clicked at ${stamp}`);
+          console.log(
+            `[${stamp}] ⏳ Now auto-clicking "Book Tickets" on detail page…`,
+          );
+
+          // ── SECOND STAGE: auto-click "Book Tickets" on the detail page ──
+          // Must wait for URL to change (SPA navigation) before clicking,
+          // otherwise we'd match buttons on the listing page.
+          try {
+            const originalUrl = page.url();
+            console.log(
+              `[${ts()}] Waiting for URL change from: ${originalUrl}`,
+            );
+
+            // Wait for the URL to change — this is very fast for SPA navigation
+            await page.waitForURL((url) => url.toString() !== originalUrl, {
+              timeout: 15_000,
+            });
+            console.log(`[${ts()}] 📄 Now on: ${page.url()}`);
+
+            // Immediately click — Playwright locator auto-waits for the element
+            // to appear in DOM and be actionable, no manual delay needed
+            const bookBtn = page
+              .locator("button[aria-label='Book Tickets']")
+              .first();
+            await bookBtn.click({ timeout: 10_000 });
+            console.log(`[${ts()}] ✅ SECOND CLICK: "Book Tickets" clicked!`);
+            await sendWhatsAppAlert(
+              `Queue entered! Both clicks done at ${ts()}`,
+            );
+          } catch (err) {
+            console.log(`[${ts()}] First strategy failed: ${err.message}`);
+            // Fallback: try text-based locator
+            try {
+              await page
+                .locator("button", { hasText: "Book Tickets" })
+                .first()
+                .click({ timeout: 5_000 });
+              console.log(
+                `[${ts()}] ✅ SECOND CLICK (text fallback): clicked!`,
+              );
+              await sendWhatsAppAlert(`Queue entered at ${ts()}`);
+            } catch (err2) {
+              console.error(
+                `[${ts()}] ❌ Second click failed: ${err2.message}`,
+              );
+              // Debug: dump page state
+              try {
+                const info = await page.evaluate(() => ({
+                  url: location.href,
+                  buttons: Array.from(document.querySelectorAll("button")).map(
+                    (b) => ({
+                      text: (b.innerText || "").trim().slice(0, 50),
+                      ariaLabel: b.getAttribute("aria-label") || "",
+                      visible: b.getBoundingClientRect().width > 0,
+                    }),
+                  ),
+                }));
+                console.log(
+                  `[${ts()}] Page debug:`,
+                  JSON.stringify(info, null, 2),
+                );
+              } catch (_) {}
+            }
+          }
           return;
         }
 
@@ -566,10 +629,15 @@ async function main() {
   // ── Start ─────────────────────────────────────────────────────────────────
   console.log(`[${ts()}] Launching browser…`);
   console.log(
-    "  Step 1 — Hover over the button you want to watch (red outline).",
+    "  Step 1 — Use 'Pick Element' to select the 'Book tickets' button for your match.",
   );
-  console.log("  Step 2 — Click it to mark it.");
-  console.log('  Step 3 — Click "Start Monitoring" in the floating panel.\n');
+  console.log("  Step 2 — Click 'Start Monitoring'. Bot will poll every 50ms.");
+  console.log(
+    "  Step 3 — When 'Book tickets' appears (countdown ends), bot clicks it.",
+  );
+  console.log(
+    "  Step 4 — Bot auto-clicks 'Book Tickets' on the detail page to enter queue.\n",
+  );
 
   await loadPage();
   await injectUI();
