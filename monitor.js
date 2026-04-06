@@ -24,6 +24,13 @@ const POLL_MS = 50;
 const RELOAD_MS = 30_000;
 // ──────────────────────────────────────────────────────────────────────────────
 
+function normalizeText(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
 /**
  * Placeholder — wire your Baileys / whatsapp-web.js client here.
  *   Baileys:         await sock.sendMessage('<num>@s.whatsapp.net', { text: message });
@@ -66,6 +73,12 @@ const PICKER_SCRIPT = `
       padding:3px 8px; font-size:11px; cursor:pointer; margin-bottom:8px; width:100%;
     }
     #__tb_unmark:hover { border-color:#e94560; color:#e94560; }
+      #__tb_pick {
+      background:none; border:1px solid #7aa2ff; color:#7aa2ff; border-radius:6px;
+      padding:8px 0; cursor:pointer; font-size:13px; width:100%; font-weight:bold; margin-bottom:6px;
+    }
+    #__tb_pick:hover { background:#7aa2ff; color:#111; }
+    #__tb_pick.__tb_active { background:#7aa2ff; color:#111; }
     #__tb_start    {
       background:#e94560; color:#fff; border:none; border-radius:6px;
       padding:9px 0; cursor:pointer; font-size:13px; width:100%; font-weight:bold;
@@ -85,8 +98,9 @@ const PICKER_SCRIPT = `
   panel.id = '__tb_panel';
   panel.innerHTML = \`
     <div id="__tb_titlebar"><h3>🎯 TicketBot</h3><span style="color:#555;font-size:11px">⠿ drag</span></div>
-    <div id="__tb_info">Hover &amp; <b>click</b> the button<br>you want to monitor</div>
+    <div id="__tb_info">Browse normally.<br>Use <b>Pick Element</b> when ready.</div>
     <button id="__tb_unmark" style="display:none">✕ Unmark</button>
+    <button id="__tb_pick">Pick Element</button>
     <button id="__tb_start" disabled>Start Monitoring</button>
     <button id="__tb_cancel" style="display:none">⏹ Cancel Monitoring</button>
   \`;
@@ -95,6 +109,7 @@ const PICKER_SCRIPT = `
   const info      = document.getElementById('__tb_info');
   const btn       = document.getElementById('__tb_start');
   const unmarkBtn = document.getElementById('__tb_unmark');
+  const pickBtn   = document.getElementById('__tb_pick');
   const cancelBtn = document.getElementById('__tb_cancel');
   const titlebar  = document.getElementById('__tb_titlebar');
 
@@ -132,11 +147,43 @@ const PICKER_SCRIPT = `
     return parts.join(' > ');
   }
 
+  function buildDescriptor(el) {
+    const text = (el.innerText || el.textContent || el.value || '').trim();
+    const classes = Array.from(el.classList || []).slice(0, 6);
+    const href = typeof el.getAttribute === 'function' ? (el.getAttribute('href') || '') : '';
+    const ariaLabel = typeof el.getAttribute === 'function' ? (el.getAttribute('aria-label') || '') : '';
+    const role = typeof el.getAttribute === 'function' ? (el.getAttribute('role') || '') : '';
+    const type = typeof el.getAttribute === 'function' ? (el.getAttribute('type') || '') : '';
+    return {
+      selector: getSelector(el),
+      text: text.slice(0, 200),
+      tagName: (el.tagName || '').toLowerCase(),
+      classes: classes,
+      href: href,
+      ariaLabel: ariaLabel,
+      role: role,
+      type: type,
+      pathname: location.pathname
+    };
+  }
+
   let markedEl = null;
+  let pickerActive = false;
+
+  function setPickerActive(active) {
+    pickerActive = active;
+    pickBtn.classList.toggle('__tb_active', active);
+    pickBtn.textContent = active ? 'Picking… click target' : 'Pick Element';
+    if (!active) {
+      document.querySelectorAll('.__tb_hover').forEach(function (el) {
+        el.classList.remove('__tb_hover');
+      });
+    }
+  }
 
   // ── Hover highlight ──────────────────────────────────────────────────────
   document.addEventListener('mouseover', function (e) {
-    if (panel.contains(e.target)) return;
+    if (!pickerActive || panel.contains(e.target)) return;
     document.querySelectorAll('.__tb_hover').forEach(function (el) {
       el.classList.remove('__tb_hover');
     });
@@ -147,7 +194,7 @@ const PICKER_SCRIPT = `
   let monitoring = false; // locked once Start Monitoring is clicked
   document.addEventListener('click', function (e) {
     if (panel.contains(e.target)) return;
-    if (monitoring) return; // ignore page clicks while monitoring
+    if (monitoring || !pickerActive) return;
     e.preventDefault();
     e.stopImmediatePropagation();
 
@@ -158,20 +205,48 @@ const PICKER_SCRIPT = `
     markedEl.classList.remove('__tb_hover');
     markedEl.classList.add('__tb_marked');
 
-    const selector = getSelector(e.target);
-    const text = (e.target.innerText || e.target.textContent || '').trim().slice(0, 40);
+    const descriptor = buildDescriptor(e.target);
+    const text = descriptor.text.slice(0, 40);
     info.innerHTML = '✓ Marked:<br><b>"' + text + '"</b>';
     btn.disabled = false;
     unmarkBtn.style.display = 'block';
-    window.__tb_mark({ selector: selector, text: text });
+    setPickerActive(false);
+    window.__tb_mark(descriptor);
   }, true);
+
+  pickBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    if (monitoring) return;
+    setPickerActive(!pickerActive);
+    if (pickerActive) {
+      info.innerHTML = 'Picker enabled.<br><b>Click</b> the element to monitor';
+    } else if (markedEl) {
+      const text = (markedEl.innerText || markedEl.textContent || '').trim().slice(0, 40);
+      info.innerHTML = '✓ Marked:<br><b>"' + text + '"</b>';
+    } else {
+      info.innerHTML = 'Browse normally.<br>Use <b>Pick Element</b> when ready.';
+    }
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && pickerActive) {
+      setPickerActive(false);
+      if (markedEl) {
+        const text = (markedEl.innerText || markedEl.textContent || '').trim().slice(0, 40);
+        info.innerHTML = '✓ Marked:<br><b>"' + text + '"</b>';
+      } else {
+        info.innerHTML = 'Browse normally.<br>Use <b>Pick Element</b> when ready.';
+      }
+    }
+  });
 
   // ── Unmark button ─────────────────────────────────────────────────────────
   unmarkBtn.addEventListener('click', function (e) {
     e.stopPropagation();
     if (markedEl) { markedEl.classList.remove('__tb_marked'); markedEl = null; }
     monitoring = false;
-    info.innerHTML = 'Hover &amp; <b>click</b> the button<br>you want to monitor';
+    setPickerActive(false);
+    info.innerHTML = 'Browse normally.<br>Use <b>Pick Element</b> when ready.';
     btn.disabled = true;
     unmarkBtn.style.display = 'none';
     window.__tb_unmark();
@@ -181,6 +256,7 @@ const PICKER_SCRIPT = `
   btn.addEventListener('click', function (e) {
     e.stopPropagation();
     monitoring = true;
+    setPickerActive(false);
     info.innerHTML = '▶ Monitoring…';
     btn.disabled = true;
     unmarkBtn.style.display = 'none';
@@ -197,7 +273,8 @@ const PICKER_SCRIPT = `
     e.stopPropagation();
     monitoring = false;
     markedEl = null;
-    info.innerHTML = 'Hover &amp; <b>click</b> the button<br>you want to monitor';
+    setPickerActive(false);
+    info.innerHTML = 'Browse normally.<br>Use <b>Pick Element</b> when ready.';
     btn.disabled = true;
     cancelBtn.style.display = 'none';
     window.__tb_cancel();
@@ -216,21 +293,26 @@ async function main() {
 
   let markedSelector = null;
   let markedText = null;
+  let markedDescriptor = null;
   let intervalId = null;
   let clicked = false;
   let isChecking = false;
   let lastLoadTime = Date.now();
+  let lastPathMismatchLog = 0;
 
   // ── Expose Node callbacks to the browser tab ──────────────────────────────
-  await page.exposeFunction("__tb_mark", ({ selector, text }) => {
-    markedSelector = selector;
-    markedText = text;
-    console.log(`\n[${ts()}] Marked  : "${text}"`);
-    console.log(`         Selector: ${selector}`);
+  await page.exposeFunction("__tb_mark", (descriptor) => {
+    markedDescriptor = descriptor;
+    markedSelector = descriptor.selector;
+    markedText = descriptor.text;
+    console.log(`\n[${ts()}] Marked  : "${descriptor.text}"`);
+    console.log(`         Selector: ${descriptor.selector}`);
+    console.log(`         Path    : ${descriptor.pathname}`);
     console.log('         Now click "Start Monitoring" in the panel.\n');
   });
 
   await page.exposeFunction("__tb_unmark", () => {
+    markedDescriptor = null;
     markedSelector = null;
     markedText = null;
     console.log(`[${ts()}] Unmarked — pick a new element.`);
@@ -243,6 +325,7 @@ async function main() {
     }
     clicked = false;
     isChecking = false;
+    markedDescriptor = null;
     markedSelector = null;
     markedText = null;
     console.log(
@@ -251,7 +334,7 @@ async function main() {
   });
 
   await page.exposeFunction("__tb_start", () => {
-    if (!markedSelector) {
+    if (!markedDescriptor) {
       console.log(`[${ts()}] Nothing marked yet — click an element first.`);
       return;
     }
@@ -275,18 +358,164 @@ async function main() {
       if (clicked || isChecking) return;
       isChecking = true;
       try {
-        const locator = page.locator(markedSelector);
-        const visible = await locator
-          .first()
-          .isVisible()
-          .catch(() => false);
+        const result = await page.evaluate((descriptor) => {
+          function normalize(value) {
+            return String(value || "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+          }
 
-        if (visible) {
+          function isVisible(el) {
+            if (!el || !el.isConnected) return false;
+            const style = window.getComputedStyle(el);
+            if (
+              style.display === "none" ||
+              style.visibility === "hidden" ||
+              style.pointerEvents === "none"
+            ) {
+              return false;
+            }
+            const rect = el.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          }
+
+          function elementText(el) {
+            return normalize(
+              el.innerText ||
+                el.textContent ||
+                el.value ||
+                el.getAttribute("aria-label") ||
+                "",
+            );
+          }
+
+          function collectCandidates() {
+            const seen = new Set();
+            const list = [];
+
+            function add(el) {
+              if (!el || seen.has(el)) return;
+              seen.add(el);
+              list.push(el);
+            }
+
+            if (descriptor.selector) {
+              document.querySelectorAll(descriptor.selector).forEach(add);
+            }
+
+            const interactiveSelector = [
+              "button",
+              "a",
+              '[role="button"]',
+              'input[type="button"]',
+              'input[type="submit"]',
+            ].join(",");
+
+            document.querySelectorAll(interactiveSelector).forEach((el) => {
+              const text = elementText(el);
+              const ariaLabel = normalize(el.getAttribute("aria-label"));
+              const href = el.getAttribute("href") || "";
+              if (!descriptor.text && !descriptor.ariaLabel && !descriptor.href)
+                return;
+              if (descriptor.text && text === normalize(descriptor.text))
+                add(el);
+              else if (
+                descriptor.ariaLabel &&
+                ariaLabel === normalize(descriptor.ariaLabel)
+              )
+                add(el);
+              else if (descriptor.href && href === descriptor.href) add(el);
+            });
+
+            return list;
+          }
+
+          function scoreCandidate(el) {
+            let score = 0;
+            const text = elementText(el);
+            const ariaLabel = normalize(el.getAttribute("aria-label"));
+            const href = el.getAttribute("href") || "";
+            const role = el.getAttribute("role") || "";
+            const type = el.getAttribute("type") || "";
+            const tagName = (el.tagName || "").toLowerCase();
+            const classList = new Set(Array.from(el.classList || []));
+
+            if (descriptor.selector && el.matches(descriptor.selector))
+              score += 120;
+            if (descriptor.text && text === normalize(descriptor.text))
+              score += 80;
+            if (
+              descriptor.ariaLabel &&
+              ariaLabel === normalize(descriptor.ariaLabel)
+            )
+              score += 40;
+            if (descriptor.href && href === descriptor.href) score += 40;
+            if (descriptor.tagName && tagName === descriptor.tagName)
+              score += 25;
+            if (descriptor.role && role === descriptor.role) score += 15;
+            if (descriptor.type && type === descriptor.type) score += 10;
+
+            for (const cls of descriptor.classes || []) {
+              if (classList.has(cls)) score += 6;
+            }
+
+            if (isVisible(el)) score += 20;
+            return score;
+          }
+
+          if (
+            descriptor.pathname &&
+            location.pathname !== descriptor.pathname
+          ) {
+            return {
+              clicked: false,
+              reason: "path-mismatch",
+              currentPath: location.pathname,
+            };
+          }
+
+          const best = collectCandidates()
+            .map((el) => ({ el, score: scoreCandidate(el) }))
+            .filter((entry) => isVisible(entry.el))
+            .sort((a, b) => b.score - a.score)[0];
+
+          if (!best || best.score < 80) {
+            return { clicked: false, reason: "not-found" };
+          }
+
+          best.el.click();
+          return {
+            clicked: true,
+            text: (
+              best.el.innerText ||
+              best.el.textContent ||
+              best.el.value ||
+              ""
+            )
+              .trim()
+              .slice(0, 80),
+            score: best.score,
+            currentPath: location.pathname,
+          };
+        }, markedDescriptor);
+
+        if (result.reason === "path-mismatch") {
+          if (Date.now() - lastPathMismatchLog > 5_000) {
+            lastPathMismatchLog = Date.now();
+            console.log(
+              `[${ts()}] Waiting on original page ${markedDescriptor.pathname}; current page is ${result.currentPath}`,
+            );
+          }
+        }
+
+        if (result.clicked) {
           clicked = true;
           clearInterval(intervalId);
           const stamp = ts();
-          console.log(`[${stamp}] CLICKED: "${markedText}"`);
-          await locator.first().click({ timeout: 5_000 });
+          console.log(
+            `[${stamp}] CLICKED: "${result.text || markedText}" (score ${result.score})`,
+          );
           await sendWhatsAppAlert(`"${markedText}" clicked at ${stamp}`);
           return;
         }
