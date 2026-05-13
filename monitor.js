@@ -532,8 +532,36 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
             box-shadow: 0 1px 2px rgba(0,0,0,0.2); transition: transform 0.1s;
         }
         .quick-copy-btn:hover { background: #d2e3fc; transform: scale(1.1); }
+        #tb-selection-send {
+          position: fixed; z-index: 2147483647;
+          background: #1f2937; color: #fff;
+          border: 1px solid #3b82f6; border-radius: 999px;
+          padding: 6px 10px; font-size: 12px; font-family: sans-serif;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+          cursor: pointer; user-select: none;
+        }
+        #tb-selection-send:hover { background: #111827; }
     \`;
     document.head.appendChild(style);
+
+      async function sendToWhatsApp(textToCopy, closeTabAfter) {
+        if (!textToCopy || !textToCopy.trim()) return;
+        const cleanedText = String(textToCopy)
+          .replace(/[\u200B-\u200D\uFEFF]/g, '')
+          .replace(/\u00A0/g, ' ')
+          .replace(/\s*,\s*/g, ', ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (!cleanedText) return;
+        try {
+          await navigator.clipboard.writeText(cleanedText);
+          try { await window.__tb_copyDone(cleanedText); } catch(_) {}
+          if (closeTabAfter) window.close();
+        } catch (err) {
+          console.error('Failed to copy', err);
+          alert('Copy failed. Please click "Allow" if the browser asks for clipboard permissions.');
+        }
+      }
 
     const addCopyIcons = () => {
         const boldTags = document.querySelectorAll('b, strong');
@@ -548,23 +576,174 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
                 e.preventDefault();
                 e.stopPropagation();
                 const textToCopy = tag.innerText.trim();
-                try {
-                    await navigator.clipboard.writeText(textToCopy);
-                    try { await window.__tb_copyDone(); } catch(_) {}
-                    window.close();
-                } catch (err) {
-                    console.error('Failed to copy', err);
-                    alert('Copy failed. Please click "Allow" if the browser asks for clipboard permissions.');
-                }
+              await sendToWhatsApp(textToCopy, true);
             };
             tag.parentNode.insertBefore(btn, tag.nextSibling);
         });
     };
 
+        let selectionBtn = null;
+        let ctrlRangeStart = null;
+        function removeSelectionBtn() {
+          if (selectionBtn && selectionBtn.parentNode) {
+            selectionBtn.parentNode.removeChild(selectionBtn);
+          }
+          selectionBtn = null;
+        }
+
+        function getSelectedText() {
+          const sel = window.getSelection();
+          if (!sel) return '';
+          return (sel.toString() || '').replace(/\s+/g, ' ').trim();
+        }
+
+        function caretFromPoint(x, y) {
+          if (typeof document.caretPositionFromPoint === 'function') {
+            const pos = document.caretPositionFromPoint(x, y);
+            if (pos && pos.offsetNode) {
+              return { node: pos.offsetNode, offset: pos.offset };
+            }
+          }
+          if (typeof document.caretRangeFromPoint === 'function') {
+            const range = document.caretRangeFromPoint(x, y);
+            if (range && range.startContainer) {
+              return { node: range.startContainer, offset: range.startOffset };
+            }
+          }
+          return null;
+        }
+
+        function isForwardPoint(a, b) {
+          if (a.node === b.node) return a.offset <= b.offset;
+          const pos = a.node.compareDocumentPosition(b.node);
+          if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return true;
+          if (pos & Node.DOCUMENT_POSITION_PRECEDING) return false;
+          return true;
+        }
+
+        async function sendCtrlClickRange(endPoint) {
+          if (!ctrlRangeStart || !ctrlRangeStart.node || !endPoint || !endPoint.node) {
+            return;
+          }
+          if (!ctrlRangeStart.node.isConnected || !endPoint.node.isConnected) {
+            ctrlRangeStart = null;
+            return;
+          }
+
+          const start = ctrlRangeStart;
+          ctrlRangeStart = null;
+
+          const range = document.createRange();
+          const forward = isForwardPoint(start, endPoint);
+          if (forward) {
+            range.setStart(start.node, start.offset);
+            range.setEnd(endPoint.node, endPoint.offset);
+          } else {
+            range.setStart(endPoint.node, endPoint.offset);
+            range.setEnd(start.node, start.offset);
+          }
+
+          const selection = window.getSelection();
+          if (selection) {
+            selection.removeAllRanges();
+            selection.addRange(range);
+          }
+
+          const picked = (range.toString() || '').replace(/\s+/g, ' ').trim();
+          if (picked) {
+            await sendToWhatsApp(picked, false);
+          }
+        }
+
+        function showSelectionBtn() {
+          const text = getSelectedText();
+          if (!text || text.length < 3) {
+            removeSelectionBtn();
+            return;
+          }
+
+          const sel = window.getSelection();
+          if (!sel || sel.rangeCount === 0) {
+            removeSelectionBtn();
+            return;
+          }
+
+          const rect = sel.getRangeAt(0).getBoundingClientRect();
+          if (!rect || (!rect.width && !rect.height)) {
+            removeSelectionBtn();
+            return;
+          }
+
+          if (!selectionBtn) {
+            selectionBtn = document.createElement('button');
+            selectionBtn.id = 'tb-selection-send';
+            selectionBtn.type = 'button';
+            selectionBtn.textContent = 'Send to WhatsApp';
+            selectionBtn.addEventListener('mousedown', (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            });
+            selectionBtn.addEventListener('click', async (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const picked = getSelectedText();
+              await sendToWhatsApp(picked, false);
+              removeSelectionBtn();
+            });
+            document.body.appendChild(selectionBtn);
+          }
+
+          const top = Math.max(8, rect.top + window.scrollY - 40);
+          const left = Math.max(8, rect.left + window.scrollX);
+          selectionBtn.style.top = top + 'px';
+          selectionBtn.style.left = left + 'px';
+        }
+
     const observer = new MutationObserver(() => { addCopyIcons(); });
     observer.observe(document.body, { childList: true, subtree: true });
+    addCopyIcons();
+
+    document.addEventListener('mouseup', () => {
+      setTimeout(showSelectionBtn, 0);
+    });
+    document.addEventListener('keyup', (e) => {
+      if (e.key === 'Shift' || e.key.startsWith('Arrow')) {
+        setTimeout(showSelectionBtn, 0);
+      }
+    });
+    document.addEventListener('mousedown', (e) => {
+      if (selectionBtn && !selectionBtn.contains(e.target)) {
+        removeSelectionBtn();
+      }
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return;
+
+      const point = caretFromPoint(e.clientX, e.clientY);
+      if (!point) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (!ctrlRangeStart) {
+        ctrlRangeStart = point;
+        return;
+      }
+
+      sendCtrlClickRange(point);
+    }, true);
 
     document.addEventListener('keydown', function(e) {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'Enter') {
+        const picked = getSelectedText();
+        if (picked) {
+          e.preventDefault();
+          sendToWhatsApp(picked, false);
+          removeSelectionBtn();
+        }
+        return;
+      }
         if (e.key === 'Escape') window.close();
     });
 })();
@@ -724,7 +903,7 @@ async function runWhatsAppGameMode(context, page) {
       /* already exposed */
     }
     try {
-      await p.exposeFunction("__tb_copyDone", async () => {
+      await p.exposeFunction("__tb_copyDone", async (explicitText) => {
         try {
           await page.bringToFront();
           // Focus the message input of whichever chat is currently open
@@ -732,8 +911,52 @@ async function runWhatsAppGameMode(context, page) {
             .locator("#main footer div[contenteditable]")
             .first();
           await input.click({ timeout: 3_000 });
-          // Paste clipboard content
-          await page.keyboard.press("Control+v");
+          if (explicitText && String(explicitText).trim()) {
+            const text = String(explicitText)
+              .replace(/[\u200B-\u200D\uFEFF]/g, "")
+              .replace(/\u00A0/g, " ")
+              .replace(/\s*,\s*/g, ", ")
+              .replace(/\s+/g, " ")
+              .trim();
+            await input.evaluate((el, value) => {
+              el.focus();
+
+              const selection = window.getSelection();
+              const range = document.createRange();
+              range.selectNodeContents(el);
+              range.collapse(false);
+              if (selection) {
+                selection.removeAllRanges();
+                selection.addRange(range);
+              }
+
+              // Insert in one shot so text appears immediately instead of typing animation.
+              const usedExecCommand =
+                typeof document.execCommand === "function" &&
+                document.execCommand("insertText", false, value);
+
+              if (!usedExecCommand) {
+                const node = document.createTextNode(value);
+                range.insertNode(node);
+                range.setStartAfter(node);
+                range.collapse(true);
+                if (selection) {
+                  selection.removeAllRanges();
+                  selection.addRange(range);
+                }
+                el.dispatchEvent(
+                  new InputEvent("input", {
+                    bubbles: true,
+                    inputType: "insertText",
+                    data: value,
+                  }),
+                );
+              }
+            }, text);
+          } else {
+            // Paste clipboard content
+            await page.keyboard.press("Control+v");
+          }
         } catch (err) {
           console.error(
             `[${ts()}] WhatsApp focus/paste failed: ${err.message}`,
