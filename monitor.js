@@ -563,6 +563,39 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
         }
       }
 
+      async function sendSelectionToWhatsApp(closeTabAfter) {
+        const selection = window.getSelection();
+        const selectedText = selection ? (selection.toString() || '') : '';
+        if (!selectedText.trim()) return;
+
+        let copied = false;
+        try {
+          if (typeof document.execCommand === 'function') {
+            copied = document.execCommand('copy');
+          }
+        } catch (_) {}
+
+        if (!copied) {
+          try {
+            await navigator.clipboard.writeText(selectedText);
+            copied = true;
+          } catch (_) {}
+        }
+
+        if (!copied) {
+          alert('Could not copy selection. Press Ctrl+C once and try again.');
+          return;
+        }
+
+        try {
+          // Call without explicit text so WhatsApp side pastes clipboard content (Ctrl+V path).
+          await window.__tb_copyDone();
+          if (closeTabAfter) window.close();
+        } catch (err) {
+          console.error('Send to WhatsApp failed:', err);
+        }
+      }
+
     const addCopyIcons = () => {
         const boldTags = document.querySelectorAll('b, strong');
         boldTags.forEach(tag => {
@@ -651,7 +684,7 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
 
           const picked = (range.toString() || '').replace(/\s+/g, ' ').trim();
           if (picked) {
-            await sendToWhatsApp(picked, false);
+            await sendSelectionToWhatsApp(false);
           }
         }
 
@@ -686,8 +719,7 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
             selectionBtn.addEventListener('click', async (e) => {
               e.preventDefault();
               e.stopPropagation();
-              const picked = getSelectedText();
-              await sendToWhatsApp(picked, false);
+              await sendSelectionToWhatsApp(false);
               removeSelectionBtn();
             });
             document.body.appendChild(selectionBtn);
@@ -739,7 +771,7 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
         const picked = getSelectedText();
         if (picked) {
           e.preventDefault();
-          sendToWhatsApp(picked, false);
+          sendSelectionToWhatsApp(false);
           removeSelectionBtn();
         }
         return;
