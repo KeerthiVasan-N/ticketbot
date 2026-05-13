@@ -13,6 +13,7 @@
  *   5. The moment that element is visible again, it is clicked automatically.
  */
 
+const path = require("path");
 const { chromium } = require("playwright-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 
@@ -22,6 +23,8 @@ chromium.use(StealthPlugin());
 const TARGET_URL = "https://district.in/events/ipl-ticket-booking";
 const POLL_MS = 50;
 const RELOAD_MS = 30_000;
+const WAATSUP_GAME = true; // ← Set true to run WhatsApp Game Helper instead of ticket bot
+const USER_DATA_DIR = path.join(__dirname, "browser-session"); // persists login across restarts
 // ──────────────────────────────────────────────────────────────────────────────
 
 function normalizeText(value) {
@@ -306,14 +309,494 @@ const PICKER_SCRIPT = `
 })();
 `;
 
+// ─── WhatsApp Game Mode Scripts ───────────────────────────────────────────────
+// Injected into WhatsApp Web tab. GM_openInTab replaced by window.__tb_openTab.
+const WA_GAME_SCRIPT = `(function() {
+    'use strict';
+    if (document.getElementById('__wa_game_style')) return;
+
+    const INITIAL_SUFFIX = " song lyrics";
+
+    const style = document.createElement('style');
+    style.id = '__wa_game_style';
+    style.innerHTML = \`
+        .image-search-btn {
+            position: absolute; top: 5px; left: 5px; cursor: pointer; z-index: 999;
+            background: rgba(255, 255, 255, 0.9); border-radius: 50%; padding: 6px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.5); transition: transform 0.2s;
+            font-size: 18px; display: flex; align-items: center; justify-content: center;
+        }
+        .image-search-btn:hover { transform: scale(1.15); background: white; }
+        .song-icon-btn {
+            display: inline-block; cursor: pointer; font-size: 16px; margin-left: 8px;
+            vertical-align: bottom; background: rgba(255, 255, 255, 0.7);
+            border-radius: 50%; padding: 2px 5px; transition: transform 0.1s;
+        }
+        .song-icon-btn:hover { transform: scale(1.2); background: #e0e0e0; }
+        #game-helper-panel {
+            position: fixed; bottom: 18px; right: 18px; z-index: 999999;
+            background: #202c33; border: 2px solid #00a884; border-radius: 12px;
+            padding: 0; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            font-family: sans-serif; color: #fff;
+            width: 340px; min-width: 220px; min-height: 110px;
+            display: flex; flex-direction: column;
+            resize: both; overflow: auto;
+        }
+        #game-helper-titlebar {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 8px 12px; cursor: grab; background: #1a252c;
+            border-bottom: 1px solid #2d3b43; border-radius: 10px 10px 0 0;
+            user-select: none; flex-shrink: 0;
+        }
+        #game-helper-titlebar:active { cursor: grabbing; }
+        #game-helper-titlebar-label {
+            font-size: 13px; font-weight: bold; color: #00a884; letter-spacing: 0.5px;
+        }
+        #game-helper-titlebar-hint {
+            font-size: 10px; color: #3b4a54;
+        }
+        #game-helper-body {
+            padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; flex: 1;
+        }
+        #game-helper-panel label {
+            font-size: 11px; color: #8696a0; margin-bottom: 2px; display: block;
+        }
+        #game-helper-suffix {
+            width: 100%; padding: 7px 10px; font-size: 14px; border: 1px solid #3b4a54;
+            border-radius: 6px; outline: none; background: #2a3942; color: #d1d7db;
+            box-sizing: border-box; transition: border-color 0.2s;
+        }
+        #game-helper-suffix:focus { border-color: #00a884; }
+        #game-helper-suffix::selection { background: #00a884; color: white; }
+        #game-helper-last {
+            font-size: 11px; color: #8696a0; word-break: break-all;
+            overflow: hidden; flex: 1;
+        }
+    \`;
+    document.head.appendChild(style);
+
+    const panel = document.createElement('div');
+    panel.id = 'game-helper-panel';
+    panel.innerHTML = \`
+        <div id="game-helper-titlebar">
+            <span id="game-helper-titlebar-label">🎮 Game Helper</span>
+            <span id="game-helper-titlebar-hint">⠿ drag</span>
+        </div>
+        <div id="game-helper-body">
+            <div>
+                <label for="game-helper-suffix">Search suffix (appended to every 🎵 click)</label>
+                <input type="text" id="game-helper-suffix" value="" spellcheck="false">
+            </div>
+            <div id="game-helper-last"></div>
+        </div>
+    \`;
+    document.body.appendChild(panel);
+
+    const suffixInput = document.getElementById('game-helper-suffix');
+    const lastLabel   = document.getElementById('game-helper-last');
+    suffixInput.value = INITIAL_SUFFIX;
+
+    // ── Drag to move ─────────────────────────────────────────────────────────
+    (function() {
+        const titlebar = document.getElementById('game-helper-titlebar');
+        let dragging = false, offX = 0, offY = 0;
+        titlebar.addEventListener('mousedown', function(e) {
+            dragging = true;
+            const r = panel.getBoundingClientRect();
+            offX = e.clientX - r.left;
+            offY = e.clientY - r.top;
+            panel.style.right = 'auto';
+            panel.style.bottom = 'auto';
+            e.preventDefault();
+        });
+        document.addEventListener('mousemove', function(e) {
+            if (!dragging) return;
+            panel.style.left = (e.clientX - offX) + 'px';
+            panel.style.top  = (e.clientY - offY) + 'px';
+        });
+        document.addEventListener('mouseup', function() { dragging = false; });
+    })();
+
+    const copyImageToClipboard = async (imgElement) => {
+        try {
+            const response = await fetch(imgElement.src);
+            const rawBlob = await response.blob();
+            const imageBitmap = await createImageBitmap(rawBlob);
+            const canvas = document.createElement('canvas');
+            canvas.width = imageBitmap.width;
+            canvas.height = imageBitmap.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(imageBitmap, 0, 0);
+            return new Promise((resolve, reject) => {
+                canvas.toBlob(async (pngBlob) => {
+                    try {
+                        const item = new ClipboardItem({ 'image/png': pngBlob });
+                        await navigator.clipboard.write([item]);
+                        resolve();
+                    } catch (e) {
+                        alert("Clipboard permission denied. Please click 'Allow' if prompted.");
+                        reject(e);
+                    }
+                }, 'image/png');
+            });
+        } catch (err) {
+            console.error('Failed to process image: ', err);
+        }
+    };
+
+    const processMessages = () => {
+        const textElements = document.querySelectorAll('.copyable-text');
+        textElements.forEach(textContainer => {
+            if (textContainer.dataset.helperAdded || !textContainer.innerText) return;
+            const textBtn = document.createElement('span');
+            textBtn.innerHTML = '🎵';
+            textBtn.className = 'song-icon-btn';
+            textBtn.title = "Search Context";
+            textBtn.onclick = async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                let rawText = textContainer.innerText || textContainer.textContent;
+                let cleanText = rawText.replace(/🎵|✅/g, '')
+                                       .replace(/Song Lyrics/gi, '')
+                                       .replace(/Lyrics/gi, '')
+                                       .replace(/\\n/g, ' ')
+                                       .trim();
+                if (cleanText.length < 2) return;
+                const suffix = suffixInput.value;
+                let finalSearchQuery = cleanText + suffix;
+                try { await navigator.clipboard.writeText(finalSearchQuery); } catch (err) {}
+                lastLabel.textContent = '🔍 ' + finalSearchQuery;
+                window.__tb_openTab('https://www.google.com/search?q=' + encodeURIComponent(finalSearchQuery));
+            };
+            textContainer.appendChild(textBtn);
+            textContainer.dataset.helperAdded = "true";
+        });
+
+        const imgElements = document.querySelectorAll('img[src^="blob:"]');
+        imgElements.forEach(imgElement => {
+            if (imgElement.dataset.helperAdded) return;
+            const imgContainer = imgElement.closest('div');
+            if (imgContainer) {
+                imgContainer.style.position = 'relative';
+                const imgBtn = document.createElement('div');
+                imgBtn.innerHTML = '🔍';
+                imgBtn.className = 'image-search-btn';
+                imgBtn.title = "Search with Google Lens";
+                imgBtn.onclick = async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const originalIcon = imgBtn.innerHTML;
+                    imgBtn.innerHTML = '⏳';
+                    await copyImageToClipboard(imgElement);
+                    imgBtn.innerHTML = originalIcon;
+                    lastLabel.textContent = '🔍 Searching image with Lens…';
+                    window.__tb_openLensTab('https://lens.google.com/search?p=', suffixInput.value);
+                };
+                imgContainer.appendChild(imgBtn);
+                imgElement.dataset.helperAdded = "true";
+            }
+        });
+    };
+
+    let timeout;
+    const observer = new MutationObserver(() => {
+        clearTimeout(timeout);
+        timeout = setTimeout(processMessages, 300);
+    });
+
+    let checkExist = setInterval(function() {
+        const app = document.querySelector('#app') || document.body;
+        if (app) {
+            console.log("WhatsApp Game Helper: DOM loaded, attaching observer.");
+            observer.observe(app, { childList: true, subtree: true });
+            clearInterval(checkExist);
+        }
+    }, 1000);
+})();
+`;
+
+// Injected into every Google Search / Google Lens tab opened by the WA helper.
+const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
+    'use strict';
+    const href = window.location.href;
+    // Run on all google.com pages (search results + Lens results)
+    // Auto-type on Lens removed — image is pasted from Node side automatically
+    if (!href.includes('google.com')) return;
+
+    const style = document.createElement('style');
+    style.innerHTML = \`
+        .quick-copy-btn {
+            cursor: pointer; margin-left: 6px; font-size: 14px;
+            text-decoration: none; display: inline-block; background: #e8eaed;
+            border-radius: 4px; padding: 2px 6px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.2); transition: transform 0.1s;
+        }
+        .quick-copy-btn:hover { background: #d2e3fc; transform: scale(1.1); }
+    \`;
+    document.head.appendChild(style);
+
+    const addCopyIcons = () => {
+        const boldTags = document.querySelectorAll('b, strong');
+        boldTags.forEach(tag => {
+            if (tag.nextSibling?.className === 'quick-copy-btn' ||
+                !tag.innerText.trim() || tag.innerText.length > 50) return;
+            const btn = document.createElement('span');
+            btn.innerHTML = '📋';
+            btn.className = 'quick-copy-btn';
+            btn.title = "Copy & Close Tab";
+            btn.onclick = async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const textToCopy = tag.innerText.trim();
+                try {
+                    await navigator.clipboard.writeText(textToCopy);
+                    try { await window.__tb_copyDone(); } catch(_) {}
+                    window.close();
+                } catch (err) {
+                    console.error('Failed to copy', err);
+                    alert('Copy failed. Please click "Allow" if the browser asks for clipboard permissions.');
+                }
+            };
+            tag.parentNode.insertBefore(btn, tag.nextSibling);
+        });
+    };
+
+    const observer = new MutationObserver(() => { addCopyIcons(); });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') window.close();
+    });
+})();
+`;
+
+// ─── WhatsApp Game Mode ───────────────────────────────────────────────────────
+async function runWhatsAppGameMode(context, page) {
+  console.log(`[${ts()}] WhatsApp Game Mode — opening WhatsApp Web…`);
+  console.log(
+    "  Click 🎵 next to any message to search song lyrics on Google.",
+  );
+  console.log("  Click 🔍 on any image to open Google Lens.\n");
+
+  // Expose helper bridges that injected scripts can call
+  const exposeOpenTab = async (p) => {
+    try {
+      await p.exposeFunction("__tb_openTab", async (url) => {
+        try {
+          const newPage = await context.newPage();
+          await newPage.goto(url, {
+            waitUntil: "domcontentloaded",
+            timeout: 30_000,
+          });
+        } catch (err) {
+          console.error(`[${ts()}] Failed to open tab: ${err.message}`);
+        }
+      });
+    } catch (_) {
+      /* already exposed */
+    }
+    try {
+      // Used for image search: opens Lens, pastes image, then pastes suffix query
+      await p.exposeFunction("__tb_openLensTab", async (url, query) => {
+        try {
+          const newPage = await context.newPage();
+          await newPage.bringToFront();
+
+          // Paste image as soon as the upload page loads — fire-and-forget listener
+          newPage.once("load", async () => {
+            try {
+              const vp = newPage.viewportSize();
+              const cx = vp ? Math.round(vp.width / 2) : 760;
+              const cy = vp ? Math.round(vp.height / 2) : 490;
+              await newPage.mouse.click(cx, cy);
+              await newPage.keyboard.press("Control+v");
+            } catch (_) {}
+          });
+
+          // Navigate directly to the Lens upload dialog (skips lens.google.com redirect)
+          await newPage.goto("https://www.google.com/?olud", {
+            waitUntil: "load",
+            timeout: 15_000,
+          });
+
+          // After paste, Google navigates to the vsrid results page.
+          // Write the suffix into clipboard then paste it into "Add to your search".
+          if (query && query.trim()) {
+            try {
+              if (!newPage.url().includes("vsrid")) {
+                await newPage.waitForURL(
+                  (u) => u.toString().includes("vsrid"),
+                  { timeout: 20_000 },
+                );
+              }
+              // Write suffix to clipboard immediately — no load state wait
+              await newPage.evaluate(
+                (q) => navigator.clipboard.writeText(q),
+                query.trim(),
+              );
+              // Wait for the "Add to your search" input to appear, then paste + Enter
+              let inputFocused = false;
+              try {
+                await newPage
+                  .getByPlaceholder(/add to your search/i)
+                  .first()
+                  .waitFor({ timeout: 8_000 });
+                await newPage
+                  .getByPlaceholder(/add to your search/i)
+                  .first()
+                  .click();
+                inputFocused = true;
+              } catch (_) {}
+              if (!inputFocused) {
+                try {
+                  const inp = newPage
+                    .locator("input[jsname], textarea[jsname]")
+                    .first();
+                  await inp.waitFor({ timeout: 3_000 });
+                  await inp.click();
+                  inputFocused = true;
+                } catch (_) {}
+              }
+              if (!inputFocused) {
+                const vp = newPage.viewportSize();
+                await newPage.mouse.click(
+                  vp ? Math.round(vp.width / 2) : 640,
+                  115,
+                );
+              }
+              await newPage.keyboard.press("Control+v");
+              await newPage.keyboard.press("Enter");
+              // Collapse the image panel so results are visible: click the ^ chevron in the search bar
+              try {
+                await newPage.waitForLoadState("domcontentloaded", {
+                  timeout: 5_000,
+                });
+                // Try the collapse/chevron button Google Lens shows in the search bar
+                const collapsed = await newPage.evaluate(() => {
+                  const btn = Array.from(
+                    document.querySelectorAll(
+                      'div[role="button"], button, span[role="button"]',
+                    ),
+                  ).find((el) => {
+                    const aria = (
+                      el.getAttribute("aria-label") || ""
+                    ).toLowerCase();
+                    const title = (
+                      el.getAttribute("title") || ""
+                    ).toLowerCase();
+                    return (
+                      aria.includes("collaps") ||
+                      aria.includes("hide") ||
+                      title.includes("collaps") ||
+                      title.includes("hide")
+                    );
+                  });
+                  if (btn) {
+                    btn.click();
+                    return true;
+                  }
+                  // Fallback: click the ^ icon (aria-expanded=true element near search bar)
+                  const exp = document.querySelector(
+                    '[aria-expanded="true"][jsaction]',
+                  );
+                  if (exp) {
+                    exp.click();
+                    return true;
+                  }
+                  return false;
+                });
+                if (!collapsed) {
+                  // Last resort: press Escape which collapses the image panel on Google Lens results
+                  await newPage.keyboard.press("Escape");
+                }
+              } catch (_) {}
+            } catch (err) {
+              console.error(
+                `[${ts()}] Lens query paste failed: ${err.message}`,
+              );
+            }
+          }
+        } catch (err) {
+          console.error(`[${ts()}] Failed to open Lens tab: ${err.message}`);
+        }
+      });
+    } catch (_) {
+      /* already exposed */
+    }
+    try {
+      await p.exposeFunction("__tb_copyDone", async () => {
+        try {
+          await page.bringToFront();
+          // Focus the message input of whichever chat is currently open
+          const input = page
+            .locator("#main footer div[contenteditable]")
+            .first();
+          await input.click({ timeout: 3_000 });
+          // Paste clipboard content
+          await page.keyboard.press("Control+v");
+        } catch (err) {
+          console.error(
+            `[${ts()}] WhatsApp focus/paste failed: ${err.message}`,
+          );
+        }
+      });
+    } catch (_) {
+      /* already exposed */
+    }
+  };
+
+  await exposeOpenTab(page);
+
+  // For every new tab (Google / Lens) opened by the helper, inject the auto-typer
+  context.on("page", async (newPage) => {
+    await exposeOpenTab(newPage);
+    newPage.on("load", async () => {
+      const url = newPage.url();
+      if (url.includes("google.com")) {
+        try {
+          await newPage.evaluate(GOOGLE_AUTOTYPER_SCRIPT);
+        } catch (_) {}
+      }
+    });
+  });
+
+  const injectWAHelper = async () => {
+    if (page.url().includes("web.whatsapp.com")) {
+      try {
+        await page.evaluate(WA_GAME_SCRIPT);
+      } catch (_) {}
+    }
+  };
+
+  page.on("load", injectWAHelper);
+
+  try {
+    await page.goto("https://web.whatsapp.com/", {
+      waitUntil: "domcontentloaded",
+      timeout: 60_000,
+    });
+  } catch (err) {
+    console.error(`[${ts()}] Navigation error: ${err.message}`);
+  }
+  await injectWAHelper();
+  console.log(`[${ts()}] WhatsApp Web loaded. Game helper active.`);
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
-  const browser = await chromium.launch({
+  // launchPersistentContext saves cookies/localStorage to USER_DATA_DIR so
+  // WhatsApp Web (and district.in) stay logged in between restarts.
+  const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
     headless: false,
     args: ["--start-maximized"],
+    viewport: null,
   });
-  const context = await browser.newContext({ viewport: null });
-  const page = await context.newPage();
+  const page = context.pages()[0] ?? (await context.newPage());
+
+  if (WAATSUP_GAME) {
+    await runWhatsAppGameMode(context, page);
+    return;
+  }
 
   let markedSelector = null;
   let markedText = null;
