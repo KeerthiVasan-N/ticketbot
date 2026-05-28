@@ -385,6 +385,15 @@ const WA_GAME_SCRIPT = `(function() {
             font-size: 11px; color: #8696a0; word-break: break-all;
             overflow: hidden; flex: 1;
         }
+        #game-helper-ai-toggle {
+          background: none; border: 1px solid #555; color: #8696a0; border-radius: 4px;
+          padding: 2px 6px; font-size: 10px; cursor: pointer; font-weight: bold;
+          margin-right: 6px; transition: background 0.15s, color 0.15s, border-color 0.15s; outline: none;
+        }
+        #game-helper-ai-toggle.active {
+          background: #7aa2ff; border-color: #7aa2ff; color: #111;
+        }
+        #game-helper-ai-toggle:hover:not(.active) { border-color: #7aa2ff; color: #7aa2ff; }
         #game-helper-num-toggle {
             background: none; border: 1px solid #555; color: #8696a0; border-radius: 4px;
             padding: 2px 6px; font-size: 10px; cursor: pointer; font-weight: bold;
@@ -412,6 +421,7 @@ const WA_GAME_SCRIPT = `(function() {
         <div id="game-helper-titlebar">
             <span id="game-helper-titlebar-label">🎮 Game Helper</span>
             <div style="display: flex; align-items: center;">
+            <button id="game-helper-ai-toggle" title="Always open Google in AI Mode">AI</button>
                 <button id="game-helper-num-toggle" title="Strip leading number (e.g. 1) from copied text">#</button>
                 <button id="game-helper-bracket-toggle" title="Wrap copied text in quotes: &quot;text&quot;suffix">" "</button>
                 <button id="game-helper-close-all" title="Close other tabs except WhatsApp">Close All</button>
@@ -431,6 +441,22 @@ const WA_GAME_SCRIPT = `(function() {
     const suffixInput = document.getElementById('game-helper-suffix');
     const lastLabel   = document.getElementById('game-helper-last');
     suffixInput.value = INITIAL_SUFFIX;
+
+    let aiModeEnabled = false;
+    const aiToggleBtn = document.getElementById('game-helper-ai-toggle');
+    if (aiToggleBtn) {
+      aiToggleBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        aiModeEnabled = !aiModeEnabled;
+        aiToggleBtn.classList.toggle('active', aiModeEnabled);
+        aiToggleBtn.textContent = aiModeEnabled ? 'AI ON' : 'AI';
+        aiToggleBtn.title = aiModeEnabled
+          ? 'AI Mode ON — searches open directly in Google AI Mode'
+          : 'Always open Google in AI Mode';
+      };
+      aiToggleBtn.onmousedown = (e) => { e.stopPropagation(); };
+    }
 
     let numStripEnabled = false;
     const numToggleBtn = document.getElementById('game-helper-num-toggle');
@@ -482,6 +508,7 @@ const WA_GAME_SCRIPT = `(function() {
         let dragging = false, offX = 0, offY = 0;
         titlebar.addEventListener('mousedown', function(e) {
             if (e.target.id === 'game-helper-close-all') return;
+          if (e.target.id === 'game-helper-ai-toggle') return;
             if (e.target.id === 'game-helper-num-toggle') return;
             if (e.target.id === 'game-helper-bracket-toggle') return;
             dragging = true;
@@ -556,7 +583,12 @@ const WA_GAME_SCRIPT = `(function() {
                 let finalSearchQuery = bracketWrapEnabled ? '"' + cleanText + '"' + suffix : cleanText + suffix;
                 try { await navigator.clipboard.writeText(finalSearchQuery); } catch (err) {}
                 lastLabel.textContent = '🔍 ' + finalSearchQuery;
-                window.__tb_openTab('https://www.google.com/search?q=' + encodeURIComponent(finalSearchQuery));
+                const searchUrl = new URL('https://www.google.com/search');
+                searchUrl.searchParams.set('q', finalSearchQuery);
+                if (aiModeEnabled) {
+                  searchUrl.searchParams.set('udm', '50');
+                }
+                window.__tb_openTab(searchUrl.toString());
             };
 
             // Try to inject into WhatsApp's action bar (same row as the react 😊 button).
@@ -681,6 +713,9 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
     // Auto-type on Lens removed — image is pasted from Node side automatically
     if (!href.includes('google.com')) return;
 
+    if (window.__googleAutotyperInitialized) return;
+    window.__googleAutotyperInitialized = true;
+
     const style = document.createElement('style');
     style.innerHTML = \`
         .quick-copy-btn {
@@ -691,6 +726,7 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
         }
         .quick-copy-btn:hover { background: #d2e3fc; transform: scale(1.1); }
         .quick-copy-btn.copied { background: #34a853 !important; color: #fff; transform: scale(1.2); }
+        .quick-copy-row { display: inline-flex; align-items: center; gap: 4px; margin-left: 4px; vertical-align: middle; }
         .game-highlight { background-color: yellow !important; color: #000 !important; font-weight: bold; }
         .game-snippet-answered { border-left: 4px solid #3b82f6 !important; padding-left: 8px !important; margin: 4px 0 !important; }
         #tb-selection-send {
@@ -705,7 +741,7 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
     \`;
     document.head.appendChild(style);
 
-      async function sendToWhatsApp(textToCopy, closeTabAfter, elementToFlash) {
+      async function sendToWhatsApp(textToCopy, closeTabAfter, elementToFlash, shouldSend) {
         if (!textToCopy || !textToCopy.trim()) return;
         const cleanedText = String(textToCopy)
           .replace(/[\u200B-\u200D\uFEFF]/g, '')
@@ -732,7 +768,7 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
           //     elementToFlash.innerHTML = originalVal;
           //   }, 1000);
           // }
-          try { await window.__tb_copyDone(cleanedText, closeTabAfter); } catch(_) {}
+          try { await window.__tb_copyDone(cleanedText, closeTabAfter, !!shouldSend); } catch(_) {}
         } catch (err) {
           console.error('Failed to copy', err);
           alert('Copy failed. Please click "Allow" if the browser asks for clipboard permissions.');
@@ -769,6 +805,12 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
         } catch (err) {
           console.error('Send to WhatsApp failed:', err);
         }
+      }
+
+      function getElementTextWithoutButtons(element) {
+        const clone = element.cloneNode(true);
+        clone.querySelectorAll('.quick-copy-row, .quick-copy-btn').forEach(n => n.remove());
+        return (clone.innerText || clone.textContent || '').trim();
       }
 
     const addCopyIcons = () => {
@@ -833,17 +875,27 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
             if (tag.dataset.tbCopyAdded ||
                 !tag.innerText.trim() || tag.innerText.length > 50 || tag.closest('#tb-selection-send')) return;
             tag.dataset.tbCopyAdded = 'true';
-            const btn = document.createElement('span');
-            btn.innerHTML = '📋';
-            btn.className = 'quick-copy-btn';
-            btn.title = "Copy to WhatsApp";
-            btn.onclick = async (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const textToCopy = tag.innerText.trim();
-              await sendToWhatsApp(textToCopy, false, btn);
+            const actionRow = document.createElement('span');
+            actionRow.className = 'quick-copy-row';
+            const pasteBtn = document.createElement('span');
+            pasteBtn.innerHTML = '📥';
+            pasteBtn.className = 'quick-copy-btn';
+            pasteBtn.title = 'Paste to WhatsApp (no send)';
+            pasteBtn.onclick = async (e) => {
+                e.preventDefault(); e.stopPropagation();
+                await sendToWhatsApp(getElementTextWithoutButtons(tag), false, pasteBtn, false);
             };
-            tag.parentNode.insertBefore(btn, tag.nextSibling);
+            const sendBtn = document.createElement('span');
+            sendBtn.innerHTML = '✅';
+            sendBtn.className = 'quick-copy-btn';
+            sendBtn.title = 'Paste & Send to WhatsApp';
+            sendBtn.onclick = async (e) => {
+                e.preventDefault(); e.stopPropagation();
+                await sendToWhatsApp(getElementTextWithoutButtons(tag), false, sendBtn, true);
+            };
+            actionRow.appendChild(pasteBtn);
+            actionRow.appendChild(sendBtn);
+            tag.parentNode.insertBefore(actionRow, tag.nextSibling);
         });
 
         // 3. Auto-detect Google answer containers/featured snippets and put a direct "📋 Send Answer" button
@@ -862,17 +914,30 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
                 
                 element.classList.add('game-snippet-answered');
                 
-                const btn = document.createElement('span');
-                btn.innerHTML = '📋 Send Answer';
-                btn.className = 'quick-copy-btn';
-                btn.style.cssText = "margin-bottom: 6px; display: inline-flex; font-weight: bold; background: #3b82f6; color: white; padding: 3px 8px;";
-                
-                btn.onclick = async (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    await sendToWhatsApp(element.innerText.replace('📋 Send Answer', '').trim(), false, btn);
+                const actionRow = document.createElement('span');
+                actionRow.className = 'quick-copy-row';
+                actionRow.style.cssText = "margin-bottom: 6px;";
+                const pasteBtn = document.createElement('span');
+                pasteBtn.innerHTML = '📥';
+                pasteBtn.className = 'quick-copy-btn';
+                pasteBtn.style.cssText = "font-weight: bold; background: #3b82f6; color: white; padding: 3px 8px;";
+                pasteBtn.title = 'Paste to WhatsApp (no send)';
+                pasteBtn.onclick = async (e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    await sendToWhatsApp(getElementTextWithoutButtons(element), false, pasteBtn, false);
                 };
-                element.insertBefore(btn, element.firstChild);
+                const sendBtn = document.createElement('span');
+                sendBtn.innerHTML = '✅';
+                sendBtn.className = 'quick-copy-btn';
+                sendBtn.style.cssText = "font-weight: bold; background: #34a853; color: white; padding: 3px 8px;";
+                sendBtn.title = 'Paste & Send to WhatsApp';
+                sendBtn.onclick = async (e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    await sendToWhatsApp(getElementTextWithoutButtons(element), false, sendBtn, true);
+                };
+                actionRow.appendChild(pasteBtn);
+                actionRow.appendChild(sendBtn);
+                element.insertBefore(actionRow, element.firstChild);
             });
         });
     };
@@ -1132,46 +1197,56 @@ async function runWhatsAppGameMode(context, page) {
       /* already exposed */
     }
     try {
-      await p.exposeFunction("__tb_copyDone", async (explicitText, closeTabAfter) => {
-        try {
-          await page.bringToFront();
-          // Focus the message input using JS focus() — avoids dispatching pointer events
-          // that could accidentally click the 🔍 image search buttons in the chat area.
-          await page.evaluate(() => {
-            const el = document.querySelector('#main footer div[contenteditable]');
-            if (el) el.focus();
-          });
-          if (explicitText && String(explicitText).trim()) {
-            const text = String(explicitText)
-              .replace(/[\u200B-\u200D\uFEFF]/g, "")
-              .replace(/\u00A0/g, " ")
-              .replace(/\s*,\s*/g, ", ")
-              .replace(/\s+/g, " ")
-              .trim();
-            // Write to WhatsApp page's own clipboard and Control+v to ensure perfect, lossless paste
-            await page.evaluate(async (t) => {
-              try {
-                await navigator.clipboard.writeText(t);
-              } catch (_) {}
-            }, text);
-            await page.keyboard.press("Control+v");
-          } else {
-            // Paste clipboard content (selection / Ctrl+range) — then send
-            await page.keyboard.press("Control+v");
-            await page.keyboard.press("Enter");
+      await p.exposeFunction(
+        "__tb_copyDone",
+        async (explicitText, closeTabAfter, shouldSend) => {
+          try {
+            await page.bringToFront();
+            // Focus the message input using JS focus() — avoids dispatching pointer events
+            // that could accidentally click the 🔍 image search buttons in the chat area.
+            await page.evaluate(() => {
+              const el = document.querySelector(
+                "#main footer div[contenteditable]",
+              );
+              if (el) el.focus();
+            });
+            if (explicitText && String(explicitText).trim()) {
+              const text = String(explicitText)
+                .replace(/[\u200B-\u200D\uFEFF]/g, "")
+                .replace(/\u00A0/g, " ")
+                .replace(/\s*,\s*/g, ", ")
+                .replace(/\s+/g, " ")
+                .trim();
+              // Write to WhatsApp page's own clipboard and Control+v to ensure perfect, lossless paste
+              await page.evaluate(async (t) => {
+                try {
+                  await navigator.clipboard.writeText(t);
+                } catch (_) {}
+              }, text);
+              await page.keyboard.press("Control+v");
+              if (shouldSend) {
+                await page.keyboard.press("Enter");
+              }
+            } else {
+              // Paste clipboard content (selection / Ctrl+range) — then send
+              await page.keyboard.press("Control+v");
+              await page.keyboard.press("Enter");
+            }
+            if (closeTabAfter) {
+              // Delay closing slightly so the active paste has finished writing to the input field
+              setTimeout(async () => {
+                try {
+                  await p.close();
+                } catch (_) {}
+              }, 100);
+            }
+          } catch (err) {
+            console.error(
+              `[${ts()}] WhatsApp focus/paste failed: ${err.message}`,
+            );
           }
-          if (closeTabAfter) {
-            // Delay closing slightly so the active paste has finished writing to the input field
-            setTimeout(async () => {
-              try { await p.close(); } catch (_) {}
-            }, 100);
-          }
-        } catch (err) {
-          console.error(
-            `[${ts()}] WhatsApp focus/paste failed: ${err.message}`,
-          );
-        }
-      });
+        },
+      );
     } catch (_) {
       /* already exposed */
     }
@@ -1181,7 +1256,9 @@ async function runWhatsAppGameMode(context, page) {
           const allPages = context.pages();
           for (const pg of allPages) {
             if (pg !== page) {
-              try { await pg.close(); } catch (_) {}
+              try {
+                await pg.close();
+              } catch (_) {}
             }
           }
         } catch (_) {}
