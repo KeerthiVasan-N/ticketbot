@@ -328,11 +328,18 @@ const WA_GAME_SCRIPT = `(function() {
         }
         .image-search-btn:hover { transform: scale(1.15); background: white; }
         .song-icon-btn {
-            display: inline-block; cursor: pointer; font-size: 16px; margin-left: 8px;
-            vertical-align: bottom; background: rgba(255, 255, 255, 0.7);
-            border-radius: 50%; padding: 2px 5px; transition: transform 0.1s;
+            display: inline-flex; align-items: center; justify-content: center;
+            cursor: pointer; font-size: 17px; width: 32px; height: 32px;
+            border-radius: 50%; flex-shrink: 0;
+            transition: background 0.15s, transform 0.15s;
         }
-        .song-icon-btn:hover { transform: scale(1.2); background: #e0e0e0; }
+        .song-icon-btn:hover { background: rgba(0,0,0,0.1); transform: scale(1.18); }
+        [data-tb-song-anchor] { position: relative !important; }
+        [data-tb-song-anchor] .song-icon-btn {
+            position: absolute; right: -34px; top: 50%; transform: translateY(-50%);
+            background: rgba(255,255,255,0.85); box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+        }
+        [data-tb-song-anchor] .song-icon-btn:hover { background: #fff; transform: translateY(-50%) scale(1.18); }
         #game-helper-panel {
             position: fixed; bottom: 18px; right: 18px; z-index: 999999;
             background: #202c33; border: 2px solid #00a884; border-radius: 12px;
@@ -355,6 +362,12 @@ const WA_GAME_SCRIPT = `(function() {
         #game-helper-titlebar-hint {
             font-size: 10px; color: #3b4a54;
         }
+        #game-helper-close-all {
+            background: #ff5c75; color: #fff; border: none; border-radius: 4px;
+            padding: 2px 6px; font-size: 10px; cursor: pointer; font-weight: bold;
+            margin-right: 8px; transition: background 0.15s; outline: none;
+        }
+        #game-helper-close-all:hover { background: #ff8597; }
         #game-helper-body {
             padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; flex: 1;
         }
@@ -372,6 +385,24 @@ const WA_GAME_SCRIPT = `(function() {
             font-size: 11px; color: #8696a0; word-break: break-all;
             overflow: hidden; flex: 1;
         }
+        #game-helper-num-toggle {
+            background: none; border: 1px solid #555; color: #8696a0; border-radius: 4px;
+            padding: 2px 6px; font-size: 10px; cursor: pointer; font-weight: bold;
+            margin-right: 6px; transition: background 0.15s, color 0.15s, border-color 0.15s; outline: none;
+        }
+        #game-helper-num-toggle.active {
+            background: #f0a500; border-color: #f0a500; color: #111;
+        }
+        #game-helper-num-toggle:hover:not(.active) { border-color: #f0a500; color: #f0a500; }
+        #game-helper-bracket-toggle {
+            background: none; border: 1px solid #555; color: #8696a0; border-radius: 4px;
+            padding: 2px 6px; font-size: 10px; cursor: pointer; font-weight: bold;
+            margin-right: 6px; transition: background 0.15s, color 0.15s, border-color 0.15s; outline: none;
+        }
+        #game-helper-bracket-toggle.active {
+            background: #00a884; border-color: #00a884; color: #fff;
+        }
+        #game-helper-bracket-toggle:hover:not(.active) { border-color: #00a884; color: #00a884; }
     \`;
     document.head.appendChild(style);
 
@@ -380,7 +411,12 @@ const WA_GAME_SCRIPT = `(function() {
     panel.innerHTML = \`
         <div id="game-helper-titlebar">
             <span id="game-helper-titlebar-label">🎮 Game Helper</span>
-            <span id="game-helper-titlebar-hint">⠿ drag</span>
+            <div style="display: flex; align-items: center;">
+                <button id="game-helper-num-toggle" title="Strip leading number (e.g. 1) from copied text">#</button>
+                <button id="game-helper-bracket-toggle" title="Wrap copied text in quotes: &quot;text&quot;suffix">" "</button>
+                <button id="game-helper-close-all" title="Close other tabs except WhatsApp">Close All</button>
+                <span id="game-helper-titlebar-hint">⠿ drag</span>
+            </div>
         </div>
         <div id="game-helper-body">
             <div>
@@ -396,11 +432,58 @@ const WA_GAME_SCRIPT = `(function() {
     const lastLabel   = document.getElementById('game-helper-last');
     suffixInput.value = INITIAL_SUFFIX;
 
+    let numStripEnabled = false;
+    const numToggleBtn = document.getElementById('game-helper-num-toggle');
+    if (numToggleBtn) {
+        numToggleBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            numStripEnabled = !numStripEnabled;
+            numToggleBtn.classList.toggle('active', numStripEnabled);
+            numToggleBtn.textContent = numStripEnabled ? '# ON' : '#';
+            numToggleBtn.title = numStripEnabled
+                ? 'Number strip ON — leading number (e.g. 1) ) removed from copied text'
+                : 'Strip leading number (e.g. 1) from copied text';
+        };
+        numToggleBtn.onmousedown = (e) => { e.stopPropagation(); };
+    }
+
+    let bracketWrapEnabled = false;
+    const bracketToggleBtn = document.getElementById('game-helper-bracket-toggle');
+    if (bracketToggleBtn) {
+        bracketToggleBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            bracketWrapEnabled = !bracketWrapEnabled;
+            bracketToggleBtn.classList.toggle('active', bracketWrapEnabled);
+            bracketToggleBtn.textContent = bracketWrapEnabled ? '" " ON' : '" "';
+            bracketToggleBtn.title = bracketWrapEnabled
+                ? 'Quote wrap ON — copied text will be "text"suffix'
+                : 'Wrap copied text in quotes: "text"suffix';
+        };
+        bracketToggleBtn.onmousedown = (e) => { e.stopPropagation(); };
+    }
+
+    const closeAllBtn = document.getElementById('game-helper-close-all');
+    if (closeAllBtn) {
+        closeAllBtn.onclick = async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            try { await window.__tb_closeOtherTabs(); } catch (_) {}
+        };
+        closeAllBtn.onmousedown = (e) => {
+            e.stopPropagation();
+        };
+    }
+
     // ── Drag to move ─────────────────────────────────────────────────────────
     (function() {
         const titlebar = document.getElementById('game-helper-titlebar');
         let dragging = false, offX = 0, offY = 0;
         titlebar.addEventListener('mousedown', function(e) {
+            if (e.target.id === 'game-helper-close-all') return;
+            if (e.target.id === 'game-helper-num-toggle') return;
+            if (e.target.id === 'game-helper-bracket-toggle') return;
             dragging = true;
             const r = panel.getBoundingClientRect();
             offX = e.clientX - r.left;
@@ -448,6 +531,12 @@ const WA_GAME_SCRIPT = `(function() {
         const textElements = document.querySelectorAll('.copyable-text');
         textElements.forEach(textContainer => {
             if (textContainer.dataset.helperAdded || !textContainer.innerText) return;
+            textContainer.dataset.helperAdded = "true";
+
+            const msgRow = textContainer.closest('[data-id]');
+            if (!msgRow || msgRow.dataset.tbSongAnchor) return;
+            msgRow.dataset.tbSongAnchor = "true";
+
             const textBtn = document.createElement('span');
             textBtn.innerHTML = '🎵';
             textBtn.className = 'song-icon-btn';
@@ -461,20 +550,50 @@ const WA_GAME_SCRIPT = `(function() {
                                        .replace(/Lyrics/gi, '')
                                        .replace(/\\n/g, ' ')
                                        .trim();
+                if (numStripEnabled) cleanText = cleanText.replace(/^\\d+[).]\\s*/, '');
                 if (cleanText.length < 2) return;
                 const suffix = suffixInput.value;
-                let finalSearchQuery = cleanText + suffix;
+                let finalSearchQuery = bracketWrapEnabled ? '"' + cleanText + '"' + suffix : cleanText + suffix;
                 try { await navigator.clipboard.writeText(finalSearchQuery); } catch (err) {}
                 lastLabel.textContent = '🔍 ' + finalSearchQuery;
                 window.__tb_openTab('https://www.google.com/search?q=' + encodeURIComponent(finalSearchQuery));
             };
-            textContainer.appendChild(textBtn);
-            textContainer.dataset.helperAdded = "true";
+
+            // Try to inject into WhatsApp's action bar (same row as the react 😊 button).
+            // The action bar is the container holding [aria-label] / [role="button"] elements
+            // that are OUTSIDE the text bubble (i.e. don't contain .copyable-text).
+            let actionsContainer = null;
+            const candidates = msgRow.querySelectorAll('[aria-label], [role="button"]');
+            for (const el of candidates) {
+                if (el === msgRow) continue;
+                if (!el.contains(textContainer) && !textContainer.contains(el)) {
+                    const parent = el.parentElement;
+                    if (parent && !parent.contains(textContainer)) {
+                        actionsContainer = parent;
+                        break;
+                    }
+                }
+            }
+
+            if (actionsContainer) {
+                actionsContainer.appendChild(textBtn);
+            } else {
+                // Fallback: pin to the right edge of the bubble div
+                let anchor = textContainer.parentElement;
+                while (anchor && (anchor.tagName !== 'DIV' || anchor === document.body)) {
+                    anchor = anchor.parentElement;
+                }
+                if (anchor) {
+                    anchor.dataset.tbSongAnchor = "true";
+                    anchor.appendChild(textBtn);
+                }
+            }
         });
 
         const imgElements = document.querySelectorAll('img[src^="blob:"]');
         imgElements.forEach(imgElement => {
             if (imgElement.dataset.helperAdded) return;
+            imgElement.dataset.helperAdded = "true"; // mark BEFORE DOM changes to prevent observer race
             const imgContainer = imgElement.closest('div');
             if (imgContainer) {
                 imgContainer.style.position = 'relative';
@@ -482,18 +601,24 @@ const WA_GAME_SCRIPT = `(function() {
                 imgBtn.innerHTML = '🔍';
                 imgBtn.className = 'image-search-btn';
                 imgBtn.title = "Search with Google Lens";
+                let imgBtnBusy = false;
                 imgBtn.onclick = async (e) => {
                     e.preventDefault();
                     e.stopPropagation();
+                    if (imgBtnBusy) return; // prevent re-entry on rapid/double clicks
+                    imgBtnBusy = true;
                     const originalIcon = imgBtn.innerHTML;
                     imgBtn.innerHTML = '⏳';
+                    imgBtn.style.pointerEvents = 'none';
                     await copyImageToClipboard(imgElement);
                     imgBtn.innerHTML = originalIcon;
+                    imgBtn.style.pointerEvents = '';
                     lastLabel.textContent = '🔍 Searching image with Lens…';
                     window.__tb_openLensTab('https://lens.google.com/search?p=', suffixInput.value);
+                    // keep locked for 8 s so copy-answer click can't re-trigger a search
+                    setTimeout(() => { imgBtnBusy = false; }, 8000);
                 };
                 imgContainer.appendChild(imgBtn);
-                imgElement.dataset.helperAdded = "true";
             }
         });
     };
@@ -501,8 +626,41 @@ const WA_GAME_SCRIPT = `(function() {
     let timeout;
     const observer = new MutationObserver(() => {
         clearTimeout(timeout);
-        timeout = setTimeout(processMessages, 300);
+        timeout = setTimeout(processMessages, 0);
     });
+
+    let ctrlDown = false;
+    let otherKeyPressed = false;
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Control') {
+            ctrlDown = true;
+            otherKeyPressed = false;
+        } else if (ctrlDown) {
+            otherKeyPressed = true;
+        }
+    }, true);
+
+    document.addEventListener('keyup', function(e) {
+        if (e.key === 'Control') {
+            ctrlDown = false;
+            if (!otherKeyPressed) {
+                const active = document.activeElement;
+                if (active && (active.getAttribute('contenteditable') === 'true' || active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const enterEvent = new KeyboardEvent('keydown', {
+                        key: 'Enter',
+                        code: 'Enter',
+                        keyCode: 13,
+                        which: 13,
+                        bubbles: true,
+                        cancelable: true
+                    });
+                    active.dispatchEvent(enterEvent);
+                }
+            }
+        }
+    }, true);
 
     let checkExist = setInterval(function() {
         const app = document.querySelector('#app') || document.body;
@@ -532,6 +690,9 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
             box-shadow: 0 1px 2px rgba(0,0,0,0.2); transition: transform 0.1s;
         }
         .quick-copy-btn:hover { background: #d2e3fc; transform: scale(1.1); }
+        .quick-copy-btn.copied { background: #34a853 !important; color: #fff; transform: scale(1.2); }
+        .game-highlight { background-color: yellow !important; color: #000 !important; font-weight: bold; }
+        .game-snippet-answered { border-left: 4px solid #3b82f6 !important; padding-left: 8px !important; margin: 4px 0 !important; }
         #tb-selection-send {
           position: fixed; z-index: 2147483647;
           background: #1f2937; color: #fff;
@@ -544,19 +705,34 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
     \`;
     document.head.appendChild(style);
 
-      async function sendToWhatsApp(textToCopy, closeTabAfter) {
+      async function sendToWhatsApp(textToCopy, closeTabAfter, elementToFlash) {
         if (!textToCopy || !textToCopy.trim()) return;
         const cleanedText = String(textToCopy)
           .replace(/[\u200B-\u200D\uFEFF]/g, '')
           .replace(/\u00A0/g, ' ')
-          .replace(/\s*,\s*/g, ', ')
-          .replace(/\s+/g, ' ')
+          .replace(/\\s*,\\s*/g, ', ')
+          .replace(/\\s+/g, ' ')
+          .trim()
+          .replace(/^["""'''\u2018\u2019\u201C\u201D]+/, '')
+          .replace(/["""'''\u2018\u2019\u201C\u201D]+$/, '')
           .trim();
         if (!cleanedText) return;
         try {
           await navigator.clipboard.writeText(cleanedText);
-          try { await window.__tb_copyDone(cleanedText); } catch(_) {}
-          if (closeTabAfter) window.close();
+          // if (elementToFlash) {
+          //   elementToFlash.classList.add('copied');
+          //   const originalVal = elementToFlash.innerHTML;
+          //   if (originalVal.length < 5) {
+          //     elementToFlash.innerHTML = '✓';
+          //   } else {
+          //     elementToFlash.innerHTML = '✓ Sent';
+          //   }
+          //   setTimeout(() => {
+          //     elementToFlash.classList.remove('copied');
+          //     elementToFlash.innerHTML = originalVal;
+          //   }, 1000);
+          // }
+          try { await window.__tb_copyDone(cleanedText, closeTabAfter); } catch(_) {}
         } catch (err) {
           console.error('Failed to copy', err);
           alert('Copy failed. Please click "Allow" if the browser asks for clipboard permissions.');
@@ -589,29 +765,115 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
 
         try {
           // Call without explicit text so WhatsApp side pastes clipboard content (Ctrl+V path).
-          await window.__tb_copyDone();
-          if (closeTabAfter) window.close();
+          await window.__tb_copyDone(null, closeTabAfter);
         } catch (err) {
           console.error('Send to WhatsApp failed:', err);
         }
       }
 
     const addCopyIcons = () => {
+        // 1. Identify and highlight the exact search terms/question terms from the URL if present
+        try {
+            const urlParams = new URLSearchParams(window.location.search);
+            const query = urlParams.get('q');
+            if (query && !window.__game_highlighted) {
+                window.__game_highlighted = true;
+                const terms = query.toLowerCase()
+                  .replace(/song lyrics/gi, '')
+                  .replace(/lyrics/gi, '')
+                  .split(' ')
+                  .map(t => t.trim())
+                  .filter(t => t.length > 2);
+                  
+                if (terms.length > 0) {
+                    const walkAndHighlight = (node) => {
+                        if (node.nodeType === 3) { // Text node
+                            const text = node.nodeValue;
+                            let matchFound = false;
+                            let lowerText = text.toLowerCase();
+                            
+                            // Find the first term that matches
+                            for (const term of terms) {
+                                const idx = lowerText.indexOf(term);
+                                if (idx !== -1 && !node.parentNode.classList?.contains('game-highlight') && !node.parentNode.closest('#tb-selection-send') && node.parentNode.tagName !== 'SCRIPT' && node.parentNode.tagName !== 'STYLE' && node.parentNode.tagName !== 'INPUT' && node.parentNode.tagName !== 'TEXTAREA') {
+                                    const span = document.createElement('span');
+                                    span.className = 'game-highlight';
+                                    const matchedText = text.slice(idx, idx + term.length);
+                                    
+                                    const beforeText = document.createTextNode(text.slice(0, idx));
+                                    const afterText = document.createTextNode(text.slice(idx + term.length));
+                                    span.appendChild(document.createTextNode(matchedText));
+                                    
+                                    const parent = node.parentNode;
+                                    parent.insertBefore(beforeText, node);
+                                    parent.insertBefore(span, node);
+                                    parent.insertBefore(afterText, node);
+                                    parent.removeChild(node);
+                                    
+                                    // Walk on remaining parts
+                                    walkAndHighlight(afterText);
+                                    matchFound = true;
+                                    break;
+                                }
+                            }
+                        } else if (node.nodeType === 1 && node.childNodes && !node.classList?.contains('game-highlight') && node.tagName !== 'SCRIPT' && node.tagName !== 'STYLE' && node.id !== 'tb-selection-send') {
+                            Array.from(node.childNodes).forEach(walkAndHighlight);
+                        }
+                    };
+                    // Only walk over primary main result blocks to stay extremely fast
+                    const container = document.querySelector('#rso') || document.body;
+                    if (container) walkAndHighlight(container);
+                }
+            }
+        } catch (_) {}
+
+        // 2. Bold tags instrumentation
         const boldTags = document.querySelectorAll('b, strong');
         boldTags.forEach(tag => {
-            if (tag.nextSibling?.className === 'quick-copy-btn' ||
-                !tag.innerText.trim() || tag.innerText.length > 50) return;
+            if (tag.dataset.tbCopyAdded ||
+                !tag.innerText.trim() || tag.innerText.length > 50 || tag.closest('#tb-selection-send')) return;
+            tag.dataset.tbCopyAdded = 'true';
             const btn = document.createElement('span');
             btn.innerHTML = '📋';
             btn.className = 'quick-copy-btn';
-            btn.title = "Copy & Close Tab";
+            btn.title = "Copy to WhatsApp";
             btn.onclick = async (e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 const textToCopy = tag.innerText.trim();
-              await sendToWhatsApp(textToCopy, true);
+              await sendToWhatsApp(textToCopy, false, btn);
             };
             tag.parentNode.insertBefore(btn, tag.nextSibling);
+        });
+
+        // 3. Auto-detect Google answer containers/featured snippets and put a direct "📋 Send Answer" button
+        const snippetSelectors = [
+            '.hgKElc',          // Featured snippet summary
+            '.LGOjbe',          // Translate card or specific definitions
+            'div.ujudUb',       // Lyrics lines / accordion lines
+            '.kp-hc',           // Knowledge Graph card titles
+            '.kp-blk',          // Fact boxes
+            '.O83Yf'            // Directly answered instant values
+        ];
+        
+        snippetSelectors.forEach(selector => {
+            document.querySelectorAll(selector).forEach(element => {
+                if (element.querySelector('.quick-copy-btn') || element.closest('#tb-selection-send')) return;
+                
+                element.classList.add('game-snippet-answered');
+                
+                const btn = document.createElement('span');
+                btn.innerHTML = '📋 Send Answer';
+                btn.className = 'quick-copy-btn';
+                btn.style.cssText = "margin-bottom: 6px; display: inline-flex; font-weight: bold; background: #3b82f6; color: white; padding: 3px 8px;";
+                
+                btn.onclick = async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    await sendToWhatsApp(element.innerText.replace('📋 Send Answer', '').trim(), false, btn);
+                };
+                element.insertBefore(btn, element.firstChild);
+            });
         });
     };
 
@@ -725,8 +987,8 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
             document.body.appendChild(selectionBtn);
           }
 
-          const top = Math.max(8, rect.top + window.scrollY - 40);
-          const left = Math.max(8, rect.left + window.scrollX);
+          const top = rect.bottom + window.scrollY + 6;
+          const left = Math.max(8, rect.right + window.scrollX);
           selectionBtn.style.top = top + 'px';
           selectionBtn.style.left = left + 'px';
         }
@@ -812,41 +1074,31 @@ async function runWhatsAppGameMode(context, page) {
         try {
           const newPage = await context.newPage();
           await newPage.bringToFront();
-
-          // Paste image as soon as the upload page loads — fire-and-forget listener
-          newPage.once("load", async () => {
-            try {
-              const vp = newPage.viewportSize();
-              const cx = vp ? Math.round(vp.width / 2) : 760;
-              const cy = vp ? Math.round(vp.height / 2) : 490;
-              await newPage.mouse.click(cx, cy);
-              await newPage.keyboard.press("Control+v");
-            } catch (_) {}
-          });
-
-          // Navigate directly to the Lens upload dialog (skips lens.google.com redirect)
-          await newPage.goto("https://www.google.com/?olud", {
-            waitUntil: "load",
+          await newPage.goto("https://lens.google.com/", {
+            waitUntil: "domcontentloaded",
             timeout: 15_000,
           });
+          // Give the page a moment to settle, then paste the copied image
+          await newPage.waitForTimeout(600);
+          await newPage.keyboard.press("Control+v");
 
-          // After paste, Google navigates to the vsrid results page.
-          // Write the suffix into clipboard then paste it into "Add to your search".
+          // After paste, Google navigates to the Lens results page.
+          // Type the suffix into "Add to your search" if provided.
           if (query && query.trim()) {
             try {
-              if (!newPage.url().includes("vsrid")) {
-                await newPage.waitForURL(
-                  (u) => u.toString().includes("vsrid"),
-                  { timeout: 20_000 },
-                );
-              }
-              // Write suffix to clipboard immediately — no load state wait
+              // Wait for Google to navigate to the Lens results (URL contains vsnd or vsrid)
+              await newPage.waitForURL(
+                (u) => {
+                  const s = u.toString();
+                  return s.includes("vsnd") || s.includes("vsrid");
+                },
+                { timeout: 20_000 },
+              );
               await newPage.evaluate(
                 (q) => navigator.clipboard.writeText(q),
                 query.trim(),
               );
-              // Wait for the "Add to your search" input to appear, then paste + Enter
-              let inputFocused = false;
+              // Click the "Add to your search" input
               try {
                 await newPage
                   .getByPlaceholder(/add to your search/i)
@@ -856,19 +1108,8 @@ async function runWhatsAppGameMode(context, page) {
                   .getByPlaceholder(/add to your search/i)
                   .first()
                   .click();
-                inputFocused = true;
-              } catch (_) {}
-              if (!inputFocused) {
-                try {
-                  const inp = newPage
-                    .locator("input[jsname], textarea[jsname]")
-                    .first();
-                  await inp.waitFor({ timeout: 3_000 });
-                  await inp.click();
-                  inputFocused = true;
-                } catch (_) {}
-              }
-              if (!inputFocused) {
+              } catch (_) {
+                // Fallback: click near the top search bar area
                 const vp = newPage.viewportSize();
                 await newPage.mouse.click(
                   vp ? Math.round(vp.width / 2) : 640,
@@ -877,50 +1118,6 @@ async function runWhatsAppGameMode(context, page) {
               }
               await newPage.keyboard.press("Control+v");
               await newPage.keyboard.press("Enter");
-              // Collapse the image panel so results are visible: click the ^ chevron in the search bar
-              try {
-                await newPage.waitForLoadState("domcontentloaded", {
-                  timeout: 5_000,
-                });
-                // Try the collapse/chevron button Google Lens shows in the search bar
-                const collapsed = await newPage.evaluate(() => {
-                  const btn = Array.from(
-                    document.querySelectorAll(
-                      'div[role="button"], button, span[role="button"]',
-                    ),
-                  ).find((el) => {
-                    const aria = (
-                      el.getAttribute("aria-label") || ""
-                    ).toLowerCase();
-                    const title = (
-                      el.getAttribute("title") || ""
-                    ).toLowerCase();
-                    return (
-                      aria.includes("collaps") ||
-                      aria.includes("hide") ||
-                      title.includes("collaps") ||
-                      title.includes("hide")
-                    );
-                  });
-                  if (btn) {
-                    btn.click();
-                    return true;
-                  }
-                  // Fallback: click the ^ icon (aria-expanded=true element near search bar)
-                  const exp = document.querySelector(
-                    '[aria-expanded="true"][jsaction]',
-                  );
-                  if (exp) {
-                    exp.click();
-                    return true;
-                  }
-                  return false;
-                });
-                if (!collapsed) {
-                  // Last resort: press Escape which collapses the image panel on Google Lens results
-                  await newPage.keyboard.press("Escape");
-                }
-              } catch (_) {}
             } catch (err) {
               console.error(
                 `[${ts()}] Lens query paste failed: ${err.message}`,
@@ -935,14 +1132,15 @@ async function runWhatsAppGameMode(context, page) {
       /* already exposed */
     }
     try {
-      await p.exposeFunction("__tb_copyDone", async (explicitText) => {
+      await p.exposeFunction("__tb_copyDone", async (explicitText, closeTabAfter) => {
         try {
           await page.bringToFront();
-          // Focus the message input of whichever chat is currently open
-          const input = page
-            .locator("#main footer div[contenteditable]")
-            .first();
-          await input.click({ timeout: 3_000 });
+          // Focus the message input using JS focus() — avoids dispatching pointer events
+          // that could accidentally click the 🔍 image search buttons in the chat area.
+          await page.evaluate(() => {
+            const el = document.querySelector('#main footer div[contenteditable]');
+            if (el) el.focus();
+          });
           if (explicitText && String(explicitText).trim()) {
             const text = String(explicitText)
               .replace(/[\u200B-\u200D\uFEFF]/g, "")
@@ -950,50 +1148,43 @@ async function runWhatsAppGameMode(context, page) {
               .replace(/\s*,\s*/g, ", ")
               .replace(/\s+/g, " ")
               .trim();
-            await input.evaluate((el, value) => {
-              el.focus();
-
-              const selection = window.getSelection();
-              const range = document.createRange();
-              range.selectNodeContents(el);
-              range.collapse(false);
-              if (selection) {
-                selection.removeAllRanges();
-                selection.addRange(range);
-              }
-
-              // Insert in one shot so text appears immediately instead of typing animation.
-              const usedExecCommand =
-                typeof document.execCommand === "function" &&
-                document.execCommand("insertText", false, value);
-
-              if (!usedExecCommand) {
-                const node = document.createTextNode(value);
-                range.insertNode(node);
-                range.setStartAfter(node);
-                range.collapse(true);
-                if (selection) {
-                  selection.removeAllRanges();
-                  selection.addRange(range);
-                }
-                el.dispatchEvent(
-                  new InputEvent("input", {
-                    bubbles: true,
-                    inputType: "insertText",
-                    data: value,
-                  }),
-                );
-              }
+            // Write to WhatsApp page's own clipboard and Control+v to ensure perfect, lossless paste
+            await page.evaluate(async (t) => {
+              try {
+                await navigator.clipboard.writeText(t);
+              } catch (_) {}
             }, text);
-          } else {
-            // Paste clipboard content
             await page.keyboard.press("Control+v");
+          } else {
+            // Paste clipboard content (selection / Ctrl+range) — then send
+            await page.keyboard.press("Control+v");
+            await page.keyboard.press("Enter");
+          }
+          if (closeTabAfter) {
+            // Delay closing slightly so the active paste has finished writing to the input field
+            setTimeout(async () => {
+              try { await p.close(); } catch (_) {}
+            }, 100);
           }
         } catch (err) {
           console.error(
             `[${ts()}] WhatsApp focus/paste failed: ${err.message}`,
           );
         }
+      });
+    } catch (_) {
+      /* already exposed */
+    }
+    try {
+      await p.exposeFunction("__tb_closeOtherTabs", async () => {
+        try {
+          const allPages = context.pages();
+          for (const pg of allPages) {
+            if (pg !== page) {
+              try { await pg.close(); } catch (_) {}
+            }
+          }
+        } catch (_) {}
       });
     } catch (_) {
       /* already exposed */
