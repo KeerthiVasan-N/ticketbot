@@ -557,7 +557,8 @@ const WA_GAME_SCRIPT = `(function() {
     const processMessages = () => {
         const textElements = document.querySelectorAll('.copyable-text');
         textElements.forEach(textContainer => {
-            if (textContainer.dataset.helperAdded || !textContainer.innerText) return;
+            const hasImgEmoji = textContainer.querySelector('img[alt]');
+            if (textContainer.dataset.helperAdded || (!textContainer.innerText && !hasImgEmoji)) return;
             textContainer.dataset.helperAdded = "true";
 
             const msgRow = textContainer.closest('[data-id]');
@@ -571,13 +572,22 @@ const WA_GAME_SCRIPT = `(function() {
             textBtn.onclick = async (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                let rawText = textContainer.innerText || textContainer.textContent;
+                // Walk the live DOM — reads text nodes and emoji <img alt="..."> by alt.
+                // We already scope to span[dir="ltr"] which is the message content only;
+                // the timestamp lives outside that span so no extra filtering is needed.
+                function extractMsgText(node) {
+                    if (node.nodeType === 3) return node.textContent;
+                    if (node.nodeName === 'IMG') return node.alt || '';
+                    return Array.from(node.childNodes).map(extractMsgText).join('');
+                }
+                const contentEl = textContainer.querySelector('span[dir="ltr"], span[dir="rtl"]') || textContainer;
+                let rawText = extractMsgText(contentEl);
                 let cleanText = rawText.replace(/🎵|✅/g, '')
                                        .replace(/Song Lyrics/gi, '')
                                        .replace(/Lyrics/gi, '')
                                        .replace(/\\n/g, ' ')
                                        .trim();
-                if (numStripEnabled) cleanText = cleanText.replace(/^\\d+[).]\\s*/, '');
+                if (numStripEnabled) cleanText = cleanText.replace(/^\d+[).]\s*/, '');
                 if (cleanText.length < 2) return;
                 const suffix = suffixInput.value;
                 let finalSearchQuery = bracketWrapEnabled ? '"' + cleanText + '"' + suffix : cleanText + suffix;
@@ -1313,6 +1323,7 @@ async function main() {
     headless: false,
     args: ["--start-maximized"],
     viewport: null,
+    permissions: ["clipboard-read", "clipboard-write"],
   });
   const page = context.pages()[0] ?? (await context.newPage());
 
