@@ -585,9 +585,11 @@ const WA_GAME_SCRIPT = `(function() {
                 let cleanText = rawText.replace(/🎵|✅/g, '')
                                        .replace(/Song Lyrics/gi, '')
                                        .replace(/Lyrics/gi, '')
+                                       .replace(/\\b\\d{1,2}:\\d{2}(?:\\s*(?:AM|PM))?\\b/gi, '')
+                                       .replace(/\\s+/g, ' ')
                                        .replace(/\\n/g, ' ')
                                        .trim();
-                if (numStripEnabled) cleanText = cleanText.replace(/^\d+[).]\s*/, '');
+                if (numStripEnabled) cleanText = cleanText.replace(/^\\d+[).]\\s*/, '');
                 if (cleanText.length < 2) return;
                 const suffix = suffixInput.value;
                 let finalSearchQuery = bracketWrapEnabled ? '"' + cleanText + '"' + suffix : cleanText + suffix;
