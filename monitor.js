@@ -1155,15 +1155,18 @@ async function runWhatsAppGameMode(context, page) {
             waitUntil: "domcontentloaded",
             timeout: 15_000,
           });
-          // Give the page a moment to settle, then paste the copied image
-          await newPage.waitForTimeout(600);
+          await newPage.waitForTimeout(400);
           await newPage.keyboard.press("Control+v");
 
-          // After paste, Google navigates to the Lens results page.
-          // Type the suffix into "Add to your search" if provided.
           if (query && query.trim()) {
             try {
-              // Wait for Google to navigate to the Lens results (URL contains vsnd or vsrid)
+              // Write suffix to clipboard while Google processes the image
+              await newPage.evaluate(
+                (q) => navigator.clipboard.writeText(q),
+                query.trim(),
+              );
+              // Wait for Lens results URL — confirms image was processed and we
+              // are on the correct results page before touching any input
               await newPage.waitForURL(
                 (u) => {
                   const s = u.toString();
@@ -1171,29 +1174,22 @@ async function runWhatsAppGameMode(context, page) {
                 },
                 { timeout: 20_000 },
               );
-              await newPage.evaluate(
-                (q) => navigator.clipboard.writeText(q),
-                query.trim(),
-              );
-              // Click the "Add to your search" input
+              const searchInput = newPage
+                .getByPlaceholder(/add to your search/i)
+                .first();
               try {
-                await newPage
-                  .getByPlaceholder(/add to your search/i)
-                  .first()
-                  .waitFor({ timeout: 8_000 });
-                await newPage
-                  .getByPlaceholder(/add to your search/i)
-                  .first()
-                  .click();
+                await searchInput.waitFor({ timeout: 5_000 });
+                // fill() focuses + sets value + triggers input events in one call
+                await searchInput.fill(query.trim());
               } catch (_) {
-                // Fallback: click near the top search bar area
+                // Fallback: click near the top search bar area and paste
                 const vp = newPage.viewportSize();
                 await newPage.mouse.click(
                   vp ? Math.round(vp.width / 2) : 640,
                   115,
                 );
+                await newPage.keyboard.press("Control+v");
               }
-              await newPage.keyboard.press("Control+v");
               await newPage.keyboard.press("Enter");
             } catch (err) {
               console.error(
