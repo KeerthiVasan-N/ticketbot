@@ -315,7 +315,7 @@ const WA_GAME_SCRIPT = `(function() {
     'use strict';
     if (document.getElementById('__wa_game_style')) return;
 
-    const INITIAL_SUFFIX = " song lyrics";
+    const INITIAL_SUFFIX = " find this brand";
 
     const style = document.createElement('style');
     style.id = '__wa_game_style';
@@ -554,6 +554,25 @@ const WA_GAME_SCRIPT = `(function() {
         }
     };
 
+    // Returns the image as a PNG data URL so it can be uploaded to Lens via its
+    // file input (no clipboard / tab focus needed — keeps the search off-screen).
+    const getImagePngDataUrl = async (imgElement) => {
+        try {
+            const response = await fetch(imgElement.src);
+            const rawBlob = await response.blob();
+            const imageBitmap = await createImageBitmap(rawBlob);
+            const canvas = document.createElement('canvas');
+            canvas.width = imageBitmap.width;
+            canvas.height = imageBitmap.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(imageBitmap, 0, 0);
+            return canvas.toDataURL('image/png');
+        } catch (err) {
+            console.error('Failed to read image: ', err);
+            return null;
+        }
+    };
+
     const processMessages = () => {
         const textElements = document.querySelectorAll('.copyable-text');
         textElements.forEach(textContainer => {
@@ -654,11 +673,11 @@ const WA_GAME_SCRIPT = `(function() {
                     const originalIcon = imgBtn.innerHTML;
                     imgBtn.innerHTML = '⏳';
                     imgBtn.style.pointerEvents = 'none';
-                    await copyImageToClipboard(imgElement);
+                    const imgData = await getImagePngDataUrl(imgElement);
                     imgBtn.innerHTML = originalIcon;
                     imgBtn.style.pointerEvents = '';
                     lastLabel.textContent = '🔍 Searching image with Lens…';
-                    window.__tb_openLensTab('https://lens.google.com/search?p=', suffixInput.value);
+                    if (imgData) window.__tb_openLensTab(imgData, suffixInput.value);
                     // keep locked for 8 s so copy-answer click can't re-trigger a search
                     setTimeout(() => { imgBtnBusy = false; }, 8000);
                 };
@@ -1146,58 +1165,73 @@ async function runWhatsAppGameMode(context, page) {
       /* already exposed */
     }
     try {
-      // Used for image search: opens Lens, pastes image, then pastes suffix query
-      await p.exposeFunction("__tb_openLensTab", async (url, query) => {
+      // Image search: opens Lens in a BACKGROUND tab, uploads the image via the
+      // file input (no clipboard/focus needed), adds the suffix, and reveals the
+      // tab only once the final combined result is ready — one perceived load.
+      await p.exposeFunction("__tb_openLensTab", async (imageDataUrl, query) => {
+        let newPage;
         try {
-          const newPage = await context.newPage();
-          await newPage.bringToFront();
+          newPage = await context.newPage();
           await newPage.goto("https://lens.google.com/", {
             waitUntil: "domcontentloaded",
             timeout: 15_000,
           });
-          await newPage.waitForTimeout(400);
-          await newPage.keyboard.press("Control+v");
 
-          if (query && query.trim()) {
-            try {
-              // Write suffix to clipboard while Google processes the image
-              await newPage.evaluate(
-                (q) => navigator.clipboard.writeText(q),
-                query.trim(),
-              );
-              // Wait for Lens results URL — confirms image was processed and we
-              // are on the correct results page before touching any input
-              await newPage.waitForURL(
-                (u) => {
-                  const s = u.toString();
-                  return s.includes("vsnd") || s.includes("vsrid");
-                },
-                { timeout: 20_000 },
-              );
-              const searchInput = newPage
-                .getByPlaceholder(/add to your search/i)
-                .first();
-              try {
-                await searchInput.waitFor({ timeout: 5_000 });
-                // fill() focuses + sets value + triggers input events in one call
-                await searchInput.fill(query.trim());
-              } catch (_) {
-                // Fallback: click near the top search bar area and paste
-                const vp = newPage.viewportSize();
-                await newPage.mouse.click(
-                  vp ? Math.round(vp.width / 2) : 640,
-                  115,
-                );
-                await newPage.keyboard.press("Control+v");
-              }
-              await newPage.keyboard.press("Enter");
-            } catch (err) {
-              console.error(
-                `[${ts()}] Lens query paste failed: ${err.message}`,
-              );
-            }
+          const hasQuery = !!(query && query.trim());
+
+          // Decode the PNG data URL and feed it to Lens. The whole image-only ->
+          // combined sequence happens off-screen on this background tab.
+          const base64 = String(imageDataUrl).split(",")[1] || "";
+          const buffer = Buffer.from(base64, "base64");
+          const fileData = { name: "image.png", mimeType: "image/png", buffer };
+
+          // Click "upload a file" — this fires the native file chooser, which
+          // Playwright intercepts so we can hand it the image. Works on a
+          // background, unfocused tab. Fall back to the raw <input> if needed.
+          try {
+            const [chooser] = await Promise.all([
+              newPage.waitForEvent("filechooser", { timeout: 10_000 }),
+              newPage
+                .getByText(/upload a file/i)
+                .first()
+                .click({ timeout: 10_000 }),
+            ]);
+            await chooser.setFiles(fileData);
+          } catch (_) {
+            await newPage
+              .locator('input[type="file"]')
+              .first()
+              .setInputFiles(fileData, { timeout: 10_000 });
           }
+
+          // Wait for the image to be uploaded + attached (results URL appears).
+          await newPage.waitForURL(
+            (u) => {
+              const s = u.toString();
+              return s.includes("vsnd") || s.includes("vsrid");
+            },
+            { timeout: 20_000 },
+          );
+
+          if (hasQuery) {
+            const searchInput = newPage
+              .getByPlaceholder(/add to your search/i)
+              .first();
+            // fill() works on a background tab (DOM-level): focuses + sets value
+            // + triggers input events in one call.
+            await searchInput.waitFor({ timeout: 8_000 });
+            await searchInput.fill(query.trim());
+            await newPage.keyboard.press("Enter");
+            // Let the combined results render before revealing the tab.
+            await newPage.waitForLoadState("domcontentloaded").catch(() => {});
+            await newPage.waitForTimeout(700);
+          }
+
+          // Single reveal — the user lands directly on the final result.
+          await newPage.bringToFront();
         } catch (err) {
+          // On failure, reveal whatever Lens has so the user isn't stuck.
+          if (newPage) await newPage.bringToFront().catch(() => {});
           console.error(`[${ts()}] Failed to open Lens tab: ${err.message}`);
         }
       });
@@ -1319,6 +1353,7 @@ async function main() {
   // WhatsApp Web (and district.in) stay logged in between restarts.
   const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
     headless: false,
+    executablePath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     args: ["--start-maximized"],
     viewport: null,
     permissions: ["clipboard-read", "clipboard-write"],
