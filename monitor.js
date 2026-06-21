@@ -315,7 +315,7 @@ const WA_GAME_SCRIPT = `(function() {
     'use strict';
     if (document.getElementById('__wa_game_style')) return;
 
-    const INITIAL_SUFFIX = " find this brand";
+    const INITIAL_SUFFIX = " find this brand name";
 
     const style = document.createElement('style');
     style.id = '__wa_game_style';
@@ -673,11 +673,13 @@ const WA_GAME_SCRIPT = `(function() {
                     const originalIcon = imgBtn.innerHTML;
                     imgBtn.innerHTML = '⏳';
                     imgBtn.style.pointerEvents = 'none';
-                    const imgData = await getImagePngDataUrl(imgElement);
+                    // Put the image on the clipboard so the new tab can paste it
+                    // (Ctrl+V) — the same as a human pasting it into the box.
+                    await copyImageToClipboard(imgElement);
                     imgBtn.innerHTML = originalIcon;
                     imgBtn.style.pointerEvents = '';
                     lastLabel.textContent = '🔍 Searching image with Lens…';
-                    if (imgData) window.__tb_openLensTab(imgData, suffixInput.value);
+                    window.__tb_openLensTab(suffixInput.value);
                     // keep locked for 8 s so copy-answer click can't re-trigger a search
                     setTimeout(() => { imgBtnBusy = false; }, 8000);
                 };
@@ -1165,70 +1167,63 @@ async function runWhatsAppGameMode(context, page) {
       /* already exposed */
     }
     try {
-      // Image search: opens Lens in a BACKGROUND tab, uploads the image via the
-      // file input (no clipboard/focus needed), adds the suffix, and reveals the
-      // tab only once the final combined result is ready — one perceived load.
-      await p.exposeFunction("__tb_openLensTab", async (imageDataUrl, query) => {
+      // Image search: opens Google in a visible tab and does exactly what a human
+      // does — focus the search box, PASTE the image (Ctrl+V), type the suffix,
+      // and press Enter. One combined (image + suffix) search. Pasting (vs file
+      // upload) keeps the image attached when submitting.
+      await p.exposeFunction("__tb_openLensTab", async (query) => {
         let newPage;
         try {
           newPage = await context.newPage();
-          await newPage.goto("https://lens.google.com/", {
+          // Foreground is required so the clipboard paste reads the image.
+          await newPage.bringToFront();
+          await newPage.goto("https://www.google.com/?olu", {
             waitUntil: "domcontentloaded",
             timeout: 15_000,
           });
 
           const hasQuery = !!(query && query.trim());
 
-          // Decode the PNG data URL and feed it to Lens. The whole image-only ->
-          // combined sequence happens off-screen on this background tab.
-          const base64 = String(imageDataUrl).split(",")[1] || "";
-          const buffer = Buffer.from(base64, "base64");
-          const fileData = { name: "image.png", mimeType: "image/png", buffer };
+          // Focus the search box and paste the image that's on the clipboard.
+          const box = newPage
+            .locator('textarea[name="q"], input[name="q"]')
+            .first();
+          await box.click({ timeout: 10_000 });
+          await newPage.keyboard.press("Control+V");
 
-          // Click "upload a file" — this fires the native file chooser, which
-          // Playwright intercepts so we can hand it the image. Works on a
-          // background, unfocused tab. Fall back to the raw <input> if needed.
-          try {
-            const [chooser] = await Promise.all([
-              newPage.waitForEvent("filechooser", { timeout: 10_000 }),
-              newPage
-                .getByText(/upload a file/i)
-                .first()
-                .click({ timeout: 10_000 }),
-            ]);
-            await chooser.setFiles(fileData);
-          } catch (_) {
-            await newPage
-              .locator('input[type="file"]')
-              .first()
-              .setInputFiles(fileData, { timeout: 10_000 });
-          }
-
-          // Wait for the image to be uploaded + attached (results URL appears).
-          await newPage.waitForURL(
-            (u) => {
-              const s = u.toString();
-              return s.includes("vsnd") || s.includes("vsrid");
-            },
-            { timeout: 20_000 },
-          );
+          // Wait until the pasted image's thumbnail actually appears (usually well
+          // under 400ms) instead of always sleeping. Capped at 400ms so this is
+          // never slower than a blind wait even if the markup changes.
+          await newPage
+            .locator('img[src^="blob:"], img[src^="data:"]')
+            .first()
+            .waitFor({ state: "visible", timeout: 400 })
+            .catch(() => {});
 
           if (hasQuery) {
-            const searchInput = newPage
-              .getByPlaceholder(/add to your search/i)
-              .first();
-            // fill() works on a background tab (DOM-level): focuses + sets value
-            // + triggers input events in one call.
-            await searchInput.waitFor({ timeout: 8_000 });
-            await searchInput.fill(query.trim());
-            await newPage.keyboard.press("Enter");
-            // Let the combined results render before revealing the tab.
-            await newPage.waitForLoadState("domcontentloaded").catch(() => {});
-            await newPage.waitForTimeout(700);
+            // insertText drops the whole suffix in at once (not key-by-key) into
+            // the still-focused composer box.
+            await newPage.keyboard.insertText(query.trim());
+            // Brief settle so the box registers the text before submitting.
+            await newPage.waitForTimeout(100);
           }
-
-          // Single reveal — the user lands directly on the final result.
-          await newPage.bringToFront();
+          // Submit. The composer can steal focus while the image attaches, so the
+          // Enter sometimes lands on nothing. Re-focus the box and retry until we
+          // actually navigate to the results page.
+          for (let i = 0; i < 3; i++) {
+            try {
+              await box.click({ timeout: 1_500 });
+            } catch (_) {
+              /* box may have re-rendered; press Enter on whatever is focused */
+            }
+            await newPage.keyboard.press("Enter");
+            try {
+              await newPage.waitForURL(/\/search\?/, { timeout: 2_500 });
+              break;
+            } catch (_) {
+              /* not submitted yet — re-focus and try again */
+            }
+          }
         } catch (err) {
           // On failure, reveal whatever Lens has so the user isn't stuck.
           if (newPage) await newPage.bringToFront().catch(() => {});
