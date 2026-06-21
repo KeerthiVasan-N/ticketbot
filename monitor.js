@@ -1221,76 +1221,263 @@ async function runWhatsAppGameMode(context, page) {
             }
 
             if (hasQuery) {
-              // Show BOTH results as real Google pages in two windows, side by
-              // side: the bare image result on the left, the suffix result on the
-              // right.
+              // Keep the bare result as the real Google page (copyable) and
+              // overlay a floating card with the suffix answer. The card text is
+              // selectable and has a Copy button.
               try {
+                // Scrape the AI Overview as per-line { html, text }, preserving
+                // bold (even when Google styles it via CSS, not <b>) and skipping
+                // injected buttons + source noise.
+                const getAnswer = async (pg) => {
+                  await pg
+                    .waitForFunction(
+                      () =>
+                        [
+                          ...document.querySelectorAll("div,span,h1,h2,h3"),
+                        ].some((e) => e.textContent.trim() === "AI Overview"),
+                      { timeout: 8_000 },
+                    )
+                    .catch(() => {});
+                  await pg.waitForTimeout(800); // let the answer fill in
+                  return pg
+                    .evaluate(() => {
+                      const skip = (c) => {
+                        if (
+                          c.classList &&
+                          (c.classList.contains("quick-copy-btn") ||
+                            c.classList.contains("image-search-btn"))
+                        )
+                          return true;
+                        return [
+                          "BUTTON",
+                          "SVG",
+                          "IMG",
+                          "STYLE",
+                          "SCRIPT",
+                          "NOSCRIPT",
+                        ].includes(c.tagName);
+                      };
+                      const isBold = (el) => {
+                        if (el.tagName === "B" || el.tagName === "STRONG")
+                          return true;
+                        try {
+                          const w = getComputedStyle(el).fontWeight;
+                          return parseInt(w, 10) >= 600 || w === "bold";
+                        } catch (_) {
+                          return false;
+                        }
+                      };
+                      const sanitize = (el) => {
+                        const walk = (node) => {
+                          let s = "";
+                          node.childNodes.forEach((c) => {
+                            if (c.nodeType === 3) {
+                              s += c.textContent;
+                              return;
+                            }
+                            if (c.nodeType !== 1 || skip(c)) return;
+                            if (c.tagName === "BR") {
+                              s += "<br>";
+                              return;
+                            }
+                            const inner = walk(c);
+                            if (!inner.trim()) return;
+                            s += isBold(c) ? "<b>" + inner + "</b>" : inner;
+                          });
+                          return s;
+                        };
+                        return walk(el).replace(/\s+/g, " ").trim();
+                      };
+                      const noise = (t) =>
+                        !t ||
+                        t.length < 3 ||
+                        /^\+\d+$/.test(t) ||
+                        /^\d+\s*sites?$/i.test(t);
+
+                      let label = null;
+                      for (const e of document.querySelectorAll(
+                        "div,span,h1,h2,h3",
+                      )) {
+                        if (e.textContent.trim() === "AI Overview") {
+                          label = e;
+                          break;
+                        }
+                      }
+                      let container = null;
+                      if (label) {
+                        let c = label;
+                        for (let i = 0; i < 6 && c.parentElement; i++) {
+                          c = c.parentElement;
+                          if ((c.innerText || "").trim().length > 80) break;
+                        }
+                        container = c;
+                      }
+                      if (!container)
+                        container =
+                          document.querySelector("#rso") || document.body;
+
+                      const out = [];
+                      const seen = new Set();
+                      const push = (el) => {
+                        const text = (el.innerText || "")
+                          .replace(/\s+/g, " ")
+                          .trim();
+                        if (noise(text) || seen.has(text)) return;
+                        seen.add(text);
+                        out.push({ html: sanitize(el), text });
+                      };
+
+                      // Intro blocks before the first bullet list, then the list
+                      // items — and stop, so trailing sources aren't included.
+                      const list = container.querySelector("ul,ol");
+                      if (list) {
+                        for (const ch of container.children) {
+                          if (ch === list || ch.contains(list)) {
+                            list
+                              .querySelectorAll("li")
+                              .forEach((li) => push(li));
+                            break;
+                          }
+                          push(ch);
+                        }
+                      } else {
+                        push(container);
+                      }
+                      if (!out.length) {
+                        const t = (container.innerText || "")
+                          .replace(/^AI Overview\s*/, "")
+                          .trim();
+                        if (t) out.push({ html: t, text: t });
+                      }
+                      return out;
+                    })
+                    .catch(() => []);
+                };
+
                 const bareUrl = newPage.url();
 
-                // Open the suffix result in a SEPARATE window (newWindow), then
-                // add the suffix there for the combined result.
-                const cdp = await context.newCDPSession(newPage);
-                const popupPromise = context.waitForEvent("page", {
-                  timeout: 10_000,
-                });
-                await cdp.send("Target.createTarget", {
-                  url: bareUrl,
-                  newWindow: true,
-                });
-                const popup = await popupPromise;
-                await popup
-                  .waitForLoadState("domcontentloaded")
-                  .catch(() => {});
+                // Inject the overlay (with Copy button) showing "Searching…".
+                await newPage.evaluate((q) => {
+                  const id = "tb-suffix-overlay";
+                  const old = document.getElementById(id);
+                  if (old) old.remove();
+                  const box = document.createElement("div");
+                  box.id = id;
+                  box.style.cssText =
+                    "position:fixed;top:70px;right:16px;width:330px;max-height:65vh;overflow:auto;z-index:2147483647;background:#202c33;color:#e9edef;border:2px solid #00a884;border-radius:10px;padding:12px 14px;box-shadow:0 4px 16px rgba(0,0,0,.5);font-family:sans-serif;font-size:14px;line-height:1.5;white-space:pre-wrap;user-select:text;-webkit-user-select:text";
+                  const head = document.createElement("div");
+                  head.style.cssText =
+                    "color:#00a884;font-weight:bold;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:8px";
+                  const title = document.createElement("span");
+                  title.textContent = '🔍 + "' + q + '"';
+                  const actions = document.createElement("span");
+                  actions.style.cssText =
+                    "display:flex;gap:10px;align-items:center";
+                  const copyBtn = document.createElement("span");
+                  copyBtn.textContent = "📋 Copy";
+                  copyBtn.style.cssText =
+                    "cursor:pointer;font-size:12px;font-weight:normal";
+                  copyBtn.onclick = async () => {
+                    const b = document.getElementById("tb-suffix-body");
+                    const text = b
+                      ? b.dataset.fullText || b.innerText
+                      : "";
+                    try {
+                      await navigator.clipboard.writeText(text);
+                    } catch (_) {}
+                    copyBtn.textContent = "✅ Copied";
+                    setTimeout(() => (copyBtn.textContent = "📋 Copy"), 1500);
+                  };
+                  const close = document.createElement("span");
+                  close.textContent = "✕";
+                  close.style.cssText = "cursor:pointer";
+                  close.onclick = () => box.remove();
+                  actions.appendChild(copyBtn);
+                  actions.appendChild(close);
+                  head.appendChild(title);
+                  head.appendChild(actions);
+                  const body = document.createElement("div");
+                  body.id = "tb-suffix-body";
+                  body.textContent = "⏳ Searching…";
+                  body.style.cssText =
+                    "user-select:text;-webkit-user-select:text;cursor:text";
+                  box.appendChild(head);
+                  box.appendChild(body);
+                  document.body.appendChild(box);
+                }, query.trim());
+
+                // Run the suffix search in a temporary background tab.
+                const tempPage = await context.newPage();
+                await newPage.bringToFront(); // keep the real bare page on screen
+                let suffixLines = [];
                 try {
-                  const searchInput = popup
+                  await tempPage.goto(bareUrl, {
+                    waitUntil: "domcontentloaded",
+                    timeout: 15_000,
+                  });
+                  const searchInput = tempPage
                     .getByPlaceholder(/add to your search/i)
                     .first();
                   await searchInput.waitFor({ timeout: 8_000 });
                   await searchInput.fill(query.trim());
                   await searchInput.press("Enter");
+                  await tempPage
+                    .waitForLoadState("domcontentloaded")
+                    .catch(() => {});
+                  suffixLines = await getAnswer(tempPage);
                 } catch (e) {
                   console.error(
-                    `[${ts()}] Lens suffix step failed: ${e.message}`,
+                    `[${ts()}] Lens suffix search failed: ${e.message}`,
                   );
                 }
+                await tempPage.close().catch(() => {});
 
-                // Position the two windows on each half of the screen.
-                try {
-                  const screenSize = await newPage.evaluate(() => ({
-                    width: screen.availWidth,
-                    height: screen.availHeight,
-                  }));
-                  const halfW = Math.floor(screenSize.width / 2);
-                  const place = async (pg, left) => {
-                    const s = await context.newCDPSession(pg);
-                    const { windowId } = await s.send(
-                      "Browser.getWindowForTarget",
+                // Render per-line rows: each keeps the original bold (via html)
+                // and has the two WhatsApp icons (📋 paste, ✅ paste & send).
+                await newPage.evaluate((lines) => {
+                  const el = document.getElementById("tb-suffix-body");
+                  if (!el) return;
+                  el.textContent = "";
+                  if (!lines || !lines.length) {
+                    el.textContent = "(suffix search failed)";
+                    return;
+                  }
+                  el.dataset.fullText = lines.map((l) => l.text).join("\n");
+                  for (const item of lines) {
+                    const row = document.createElement("div");
+                    row.style.cssText =
+                      "display:flex;gap:6px;align-items:flex-start;margin-bottom:7px";
+                    const mkIcon = (icon, title, send) => {
+                      const b = document.createElement("span");
+                      b.textContent = icon;
+                      b.title = title;
+                      b.style.cssText =
+                        "cursor:pointer;flex-shrink:0;user-select:none;font-size:13px;line-height:1.6";
+                      b.onclick = async () => {
+                        const orig = b.textContent;
+                        try {
+                          await window.__tb_copyDone(item.text, false, send);
+                        } catch (_) {}
+                        b.textContent = send ? "📨" : "✔";
+                        setTimeout(() => (b.textContent = orig), 1200);
+                      };
+                      return b;
+                    };
+                    const span = document.createElement("span");
+                    span.innerHTML = item.html || item.text; // keep bold
+                    span.style.cssText =
+                      "user-select:text;-webkit-user-select:text";
+                    row.appendChild(mkIcon("📋", "Paste to WhatsApp", false));
+                    row.appendChild(
+                      mkIcon("✅", "Paste & Send to WhatsApp", true),
                     );
-                    // Must leave maximized state before custom bounds apply.
-                    await s.send("Browser.setWindowBounds", {
-                      windowId,
-                      bounds: { windowState: "normal" },
-                    });
-                    await s.send("Browser.setWindowBounds", {
-                      windowId,
-                      bounds: {
-                        left,
-                        top: 0,
-                        width: halfW,
-                        height: screenSize.height,
-                      },
-                    });
-                  };
-                  await place(newPage, 0); // bare result on the left
-                  await place(popup, halfW); // suffix result on the right
-                } catch (e) {
-                  console.error(
-                    `[${ts()}] Window placement failed: ${e.message}`,
-                  );
-                }
+                    row.appendChild(span);
+                    el.appendChild(row);
+                  }
+                }, suffixLines);
               } catch (err) {
                 console.error(
-                  `[${ts()}] Lens side-by-side step failed: ${err.message}`,
+                  `[${ts()}] Lens both-results step failed: ${err.message}`,
                 );
               }
             }
