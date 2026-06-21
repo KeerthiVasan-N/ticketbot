@@ -660,30 +660,38 @@ const WA_GAME_SCRIPT = `(function() {
             const imgContainer = imgElement.closest('div');
             if (imgContainer) {
                 imgContainer.style.position = 'relative';
-                const imgBtn = document.createElement('div');
-                imgBtn.innerHTML = '🔍';
-                imgBtn.className = 'image-search-btn';
-                imgBtn.title = "Search with Google Lens";
-                let imgBtnBusy = false;
-                imgBtn.onclick = async (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (imgBtnBusy) return; // prevent re-entry on rapid/double clicks
-                    imgBtnBusy = true;
-                    const originalIcon = imgBtn.innerHTML;
-                    imgBtn.innerHTML = '⏳';
-                    imgBtn.style.pointerEvents = 'none';
-                    // Put the image on the clipboard so the new tab can paste it
-                    // (Ctrl+V) — the same as a human pasting it into the box.
-                    await copyImageToClipboard(imgElement);
-                    imgBtn.innerHTML = originalIcon;
-                    imgBtn.style.pointerEvents = '';
-                    lastLabel.textContent = '🔍 Searching image with Lens…';
-                    window.__tb_openLensTab(suffixInput.value);
-                    // keep locked for 8 s so copy-answer click can't re-trigger a search
-                    setTimeout(() => { imgBtnBusy = false; }, 8000);
+                // Build an image-search button. mode decides the flow regardless
+                // of whether a suffix is set:
+                //   'suffix' -> paste image + suffix into the Google composer
+                //   'lens'   -> plain image-only Google Lens search (old flow)
+                const makeImgBtn = (icon, title, mode, leftPx) => {
+                    const btn = document.createElement('div');
+                    btn.innerHTML = icon;
+                    btn.className = 'image-search-btn';
+                    btn.title = title;
+                    if (leftPx != null) btn.style.left = leftPx + 'px';
+                    let busy = false;
+                    btn.onclick = async (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (busy) return; // prevent re-entry on rapid/double clicks
+                        busy = true;
+                        const originalIcon = btn.innerHTML;
+                        btn.innerHTML = '⏳';
+                        btn.style.pointerEvents = 'none';
+                        // Put the image on the clipboard so the new tab can paste it.
+                        await copyImageToClipboard(imgElement);
+                        btn.innerHTML = originalIcon;
+                        btn.style.pointerEvents = '';
+                        lastLabel.textContent = '🔍 Searching image…';
+                        window.__tb_openLensTab(suffixInput.value, mode);
+                        // keep locked for 8 s so copy-answer click can't re-trigger a search
+                        setTimeout(() => { busy = false; }, 8000);
+                    };
+                    return btn;
                 };
-                imgContainer.appendChild(imgBtn);
+                imgContainer.appendChild(makeImgBtn('🔍', 'Image + suffix (fast composer)', 'suffix'));
+                imgContainer.appendChild(makeImgBtn('📷', 'Image + suffix (Lens, reliable)', 'lens', 44));
             }
         });
     };
@@ -1167,22 +1175,132 @@ async function runWhatsAppGameMode(context, page) {
       /* already exposed */
     }
     try {
-      // Image search: opens Google in a visible tab and does exactly what a human
-      // does — focus the search box, PASTE the image (Ctrl+V), type the suffix,
-      // and press Enter. One combined (image + suffix) search. Pasting (vs file
-      // upload) keeps the image attached when submitting.
-      await p.exposeFunction("__tb_openLensTab", async (query) => {
+      // Image search. The image is already on the clipboard. The flow is chosen
+      // by `mode` (set by which icon was clicked), not by whether a suffix exists:
+      //  - 'lens'  : OLD FLOW — paste into Google Lens, plain image-only search.
+      //              Single fast load, very reliable.
+      //  - 'suffix': paste into the Google composer, add the suffix, and submit a
+      //              combined (image + suffix) search.
+      await p.exposeFunction("__tb_openLensTab", async (query, mode) => {
         let newPage;
         try {
           newPage = await context.newPage();
           // Foreground is required so the clipboard paste reads the image.
           await newPage.bringToFront();
+
+          const hasQuery = !!(query && query.trim());
+
+          if (mode === "lens") {
+            // OLD FLOW: Google Lens image search. Plain image-only when there is
+            // no suffix; when a suffix is set, the image-only results load first
+            // and then the suffix is added via Lens' reliable "Add to your search"
+            // box for a combined result (both results are reached).
+            await newPage.goto("https://lens.google.com/", {
+              waitUntil: "domcontentloaded",
+              timeout: 15_000,
+            });
+            // Wait for the upload area to exist so its paste handler is ready —
+            // pasting too early (the old blind 230ms) sometimes did nothing.
+            await newPage
+              .getByText(/drag an image|upload a file/i)
+              .first()
+              .waitFor({ timeout: 10_000 })
+              .catch(() => {});
+            // Paste, and retry if the image search didn't actually start.
+            for (let i = 0; i < 3; i++) {
+              await newPage.keyboard.press("Control+v");
+              try {
+                await newPage.waitForURL(
+                  (u) => /vsrid|vsnd/.test(u.toString()),
+                  { timeout: 3_000 },
+                );
+                break;
+              } catch (_) {
+                /* paste didn't take — try again */
+              }
+            }
+
+            if (hasQuery) {
+              // Show BOTH results as real Google pages in two windows, side by
+              // side: the bare image result on the left, the suffix result on the
+              // right.
+              try {
+                const bareUrl = newPage.url();
+
+                // Open the suffix result in a SEPARATE window (newWindow), then
+                // add the suffix there for the combined result.
+                const cdp = await context.newCDPSession(newPage);
+                const popupPromise = context.waitForEvent("page", {
+                  timeout: 10_000,
+                });
+                await cdp.send("Target.createTarget", {
+                  url: bareUrl,
+                  newWindow: true,
+                });
+                const popup = await popupPromise;
+                await popup
+                  .waitForLoadState("domcontentloaded")
+                  .catch(() => {});
+                try {
+                  const searchInput = popup
+                    .getByPlaceholder(/add to your search/i)
+                    .first();
+                  await searchInput.waitFor({ timeout: 8_000 });
+                  await searchInput.fill(query.trim());
+                  await searchInput.press("Enter");
+                } catch (e) {
+                  console.error(
+                    `[${ts()}] Lens suffix step failed: ${e.message}`,
+                  );
+                }
+
+                // Position the two windows on each half of the screen.
+                try {
+                  const screenSize = await newPage.evaluate(() => ({
+                    width: screen.availWidth,
+                    height: screen.availHeight,
+                  }));
+                  const halfW = Math.floor(screenSize.width / 2);
+                  const place = async (pg, left) => {
+                    const s = await context.newCDPSession(pg);
+                    const { windowId } = await s.send(
+                      "Browser.getWindowForTarget",
+                    );
+                    // Must leave maximized state before custom bounds apply.
+                    await s.send("Browser.setWindowBounds", {
+                      windowId,
+                      bounds: { windowState: "normal" },
+                    });
+                    await s.send("Browser.setWindowBounds", {
+                      windowId,
+                      bounds: {
+                        left,
+                        top: 0,
+                        width: halfW,
+                        height: screenSize.height,
+                      },
+                    });
+                  };
+                  await place(newPage, 0); // bare result on the left
+                  await place(popup, halfW); // suffix result on the right
+                } catch (e) {
+                  console.error(
+                    `[${ts()}] Window placement failed: ${e.message}`,
+                  );
+                }
+              } catch (err) {
+                console.error(
+                  `[${ts()}] Lens side-by-side step failed: ${err.message}`,
+                );
+              }
+            }
+            return;
+          }
+
           await newPage.goto("https://www.google.com/?olu", {
             waitUntil: "domcontentloaded",
             timeout: 15_000,
           });
-
-          const hasQuery = !!(query && query.trim());
 
           // Focus the search box and paste the image that's on the clipboard.
           const box = newPage
@@ -1207,6 +1325,7 @@ async function runWhatsAppGameMode(context, page) {
             // Brief settle so the box registers the text before submitting.
             await newPage.waitForTimeout(100);
           }
+
           // Submit. The composer can steal focus while the image attaches, so the
           // Enter sometimes lands on nothing. Re-focus the box and retry until we
           // actually navigate to the results page.
