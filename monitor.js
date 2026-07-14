@@ -394,6 +394,15 @@ const WA_GAME_SCRIPT = `(function() {
           background: #7aa2ff; border-color: #7aa2ff; color: #111;
         }
         #game-helper-ai-toggle:hover:not(.active) { border-color: #7aa2ff; color: #7aa2ff; }
+        #game-helper-oneline-toggle {
+          background: none; border: 1px solid #555; color: #8696a0; border-radius: 4px;
+          padding: 2px 6px; font-size: 10px; cursor: pointer; font-weight: bold;
+          margin-right: 6px; transition: background 0.15s, color 0.15s, border-color 0.15s; outline: none;
+        }
+        #game-helper-oneline-toggle.active {
+          background: #c084fc; border-color: #c084fc; color: #111;
+        }
+        #game-helper-oneline-toggle:hover:not(.active) { border-color: #c084fc; color: #c084fc; }
         #game-helper-num-toggle {
             background: none; border: 1px solid #555; color: #8696a0; border-radius: 4px;
             padding: 2px 6px; font-size: 10px; cursor: pointer; font-weight: bold;
@@ -421,6 +430,7 @@ const WA_GAME_SCRIPT = `(function() {
         <div id="game-helper-titlebar">
             <span id="game-helper-titlebar-label">🎮 Game Helper</span>
             <div style="display: flex; align-items: center;">
+            <button id="game-helper-oneline-toggle" title="Override suffix: ask for the answer as a single line of comma-separated text">1️⃣</button>
             <button id="game-helper-ai-toggle" title="Always open Google in AI Mode">AI</button>
                 <button id="game-helper-num-toggle" title="Strip leading number (e.g. 1) from copied text">#</button>
                 <button id="game-helper-bracket-toggle" title="Wrap copied text in quotes: &quot;text&quot;suffix">" "</button>
@@ -441,6 +451,30 @@ const WA_GAME_SCRIPT = `(function() {
     const suffixInput = document.getElementById('game-helper-suffix');
     const lastLabel   = document.getElementById('game-helper-last');
     suffixInput.value = INITIAL_SUFFIX;
+
+    // 1️⃣ Single-line mode: while ON the suffix box is ignored and every search
+    // uses this fixed instruction instead.
+    const ONE_LINE_SUFFIX = ' Provide the answer as a single line of comma-separated text, with no bullet points or extra conversational text';
+    let oneLineEnabled = false;
+    function activeSuffix() {
+      return oneLineEnabled ? ONE_LINE_SUFFIX : suffixInput.value;
+    }
+    const oneLineToggleBtn = document.getElementById('game-helper-oneline-toggle');
+    if (oneLineToggleBtn) {
+      oneLineToggleBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        oneLineEnabled = !oneLineEnabled;
+        oneLineToggleBtn.classList.toggle('active', oneLineEnabled);
+        oneLineToggleBtn.title = oneLineEnabled
+          ? 'Single-line ON — suffix box ignored; answers requested as one comma-separated line'
+          : 'Override suffix: ask for the answer as a single line of comma-separated text';
+        // Grey out the suffix box while it is being ignored.
+        suffixInput.disabled = oneLineEnabled;
+        suffixInput.style.opacity = oneLineEnabled ? '0.4' : '';
+      };
+      oneLineToggleBtn.onmousedown = (e) => { e.stopPropagation(); };
+    }
 
     let aiModeEnabled = false;
     const aiToggleBtn = document.getElementById('game-helper-ai-toggle');
@@ -509,6 +543,7 @@ const WA_GAME_SCRIPT = `(function() {
         titlebar.addEventListener('mousedown', function(e) {
             if (e.target.id === 'game-helper-close-all') return;
           if (e.target.id === 'game-helper-ai-toggle') return;
+            if (e.target.id === 'game-helper-oneline-toggle') return;
             if (e.target.id === 'game-helper-num-toggle') return;
             if (e.target.id === 'game-helper-bracket-toggle') return;
             dragging = true;
@@ -610,7 +645,7 @@ const WA_GAME_SCRIPT = `(function() {
                                        .trim();
                 if (numStripEnabled) cleanText = cleanText.replace(/^\\d+[).]\\s*/, '');
                 if (cleanText.length < 2) return;
-                const suffix = suffixInput.value;
+                const suffix = activeSuffix();
                 let finalSearchQuery = bracketWrapEnabled ? '"' + cleanText + '"' + suffix : cleanText + suffix;
                 try { await navigator.clipboard.writeText(finalSearchQuery); } catch (err) {}
                 lastLabel.textContent = '🔍 ' + finalSearchQuery;
@@ -684,7 +719,7 @@ const WA_GAME_SCRIPT = `(function() {
                         btn.innerHTML = originalIcon;
                         btn.style.pointerEvents = '';
                         lastLabel.textContent = '🔍 Searching image…';
-                        window.__tb_openLensTab(suffixInput.value, mode);
+                        window.__tb_openLensTab(activeSuffix(), mode);
                         // keep locked for 8 s so copy-answer click can't re-trigger a search
                         setTimeout(() => { busy = false; }, 8000);
                     };
@@ -816,36 +851,22 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
         }
       }
 
-      async function sendSelectionToWhatsApp(closeTabAfter) {
+      async function sendSelectionToWhatsApp(closeTabAfter, fallbackText) {
         const selection = window.getSelection();
-        const selectedText = selection ? (selection.toString() || '') : '';
-        if (!selectedText.trim()) return;
-
-        let copied = false;
-        try {
-          if (typeof document.execCommand === 'function') {
-            copied = document.execCommand('copy');
-          }
-        } catch (_) {}
-
-        if (!copied) {
-          try {
-            await navigator.clipboard.writeText(selectedText);
-            copied = true;
-          } catch (_) {}
-        }
-
-        if (!copied) {
-          alert('Could not copy selection. Press Ctrl+C once and try again.');
+        let selectedText = selection ? (selection.toString() || '') : '';
+        // The live selection can be collapsed by DOM mutations before the click
+        // lands, so fall back to the text captured when the button was shown.
+        if (!selectedText.trim() && fallbackText) selectedText = fallbackText;
+        if (!selectedText.trim()) {
+          alert('Could not read the selection. Select the text again and try.');
           return;
         }
 
-        try {
-          // Call without explicit text so WhatsApp side pastes clipboard content (Ctrl+V path).
-          await window.__tb_copyDone(null, closeTabAfter);
-        } catch (err) {
-          console.error('Send to WhatsApp failed:', err);
-        }
+        // Reuse the robust clipboard path (cleans + writes explicit text, then
+        // notifies the Node side) instead of relying on execCommand of a
+        // selection that may no longer exist. shouldSend=true: selection sends
+        // are "paste + Enter", unlike the paste-only 📥 button.
+        await sendToWhatsApp(selectedText, closeTabAfter, null, true);
       }
 
       function getElementTextWithoutButtons(element) {
@@ -984,6 +1005,7 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
     };
 
         let selectionBtn = null;
+        let capturedSelectionText = '';
         let ctrlRangeStart = null;
         function removeSelectionBtn() {
           if (selectionBtn && selectionBtn.parentNode) {
@@ -1075,6 +1097,10 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
             return;
           }
 
+          // Remember what was selected: by the time the button is clicked the
+          // live selection may already be gone (page re-render, focus change).
+          capturedSelectionText = text;
+
           if (!selectionBtn) {
             selectionBtn = document.createElement('button');
             selectionBtn.id = 'tb-selection-send';
@@ -1087,24 +1113,56 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
             selectionBtn.addEventListener('click', async (e) => {
               e.preventDefault();
               e.stopPropagation();
-              await sendSelectionToWhatsApp(false);
+              await sendSelectionToWhatsApp(false, capturedSelectionText);
               removeSelectionBtn();
             });
             document.body.appendChild(selectionBtn);
           }
 
-          const top = rect.bottom + window.scrollY + 6;
-          const left = Math.max(8, rect.right + window.scrollX);
+          // #tb-selection-send is position:fixed, so it must be placed in
+          // viewport coordinates (getBoundingClientRect is already viewport
+          // relative) — do NOT add scrollX/scrollY or it lands off-screen on a
+          // scrolled page. Clamp so it always stays visible.
+          const btnW = selectionBtn.offsetWidth || 150;
+          const btnH = selectionBtn.offsetHeight || 32;
+          let left = rect.right;
+          let top = rect.bottom + 6;
+          if (left + btnW > window.innerWidth - 8) left = window.innerWidth - btnW - 8;
+          if (left < 8) left = 8;
+          if (top + btnH > window.innerHeight - 8) top = rect.top - btnH - 6;
+          if (top < 8) top = 8;
           selectionBtn.style.top = top + 'px';
           selectionBtn.style.left = left + 'px';
         }
 
-    const observer = new MutationObserver(() => { addCopyIcons(); });
+    // While the user is actively dragging a selection we must NOT mutate the
+    // DOM inside the snippet they are selecting from — inserting the copy
+    // buttons collapses the in-progress selection, which is why only the
+    // whole-element button worked. Pause injection between mousedown/mouseup,
+    // and debounce + self-disconnect the observer so its own inserts don't
+    // retrigger it in a tight loop.
+    let isSelecting = false;
+    let iconScheduled = false;
+    function scheduleIcons() {
+      if (isSelecting || iconScheduled) return;
+      iconScheduled = true;
+      requestAnimationFrame(() => {
+        iconScheduled = false;
+        if (isSelecting) return;
+        observer.disconnect();
+        try { addCopyIcons(); } catch (_) {}
+        observer.observe(document.body, { childList: true, subtree: true });
+      });
+    }
+    const observer = new MutationObserver(scheduleIcons);
     observer.observe(document.body, { childList: true, subtree: true });
     addCopyIcons();
 
+    document.addEventListener('mousedown', () => { isSelecting = true; }, true);
     document.addEventListener('mouseup', () => {
+      isSelecting = false;
       setTimeout(showSelectionBtn, 0);
+      scheduleIcons();
     });
     document.addEventListener('keyup', (e) => {
       if (e.key === 'Shift' || e.key.startsWith('Arrow')) {
@@ -1119,6 +1177,9 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
 
     document.addEventListener('click', (e) => {
       if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return;
+      // This click is the tail of a Ctrl+drag selection, not a range point;
+      // the suppressor below (registered later) will swallow it.
+      if (suppressNextClick) return;
 
       const point = caretFromPoint(e.clientX, e.clientY);
       if (!point) return;
@@ -1132,6 +1193,85 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
       }
 
       sendCtrlClickRange(point);
+    }, true);
+
+    // ── Ctrl+drag: select exactly the dragged text, even inside links ───────
+    // Dragging inside an anchor normally drags the link (or snaps the whole
+    // link text into the selection). Holding Ctrl turns the drag into a
+    // precise caret-to-caret selection: only the characters actually swept are
+    // selected, and the anchor's drag/navigation behaviour is suppressed.
+    // A plain Ctrl+click (no drag beyond the threshold) still goes to the
+    // existing two-point Ctrl+click range feature above.
+    let ctrlSel = null;
+    let suppressNextClick = false;
+    const DRAG_THRESHOLD_PX = 4;
+
+    function applyCtrlRange(endPoint) {
+      if (!ctrlSel || !endPoint || !endPoint.node || !ctrlSel.start.node.isConnected) return;
+      const range = document.createRange();
+      if (isForwardPoint(ctrlSel.start, endPoint)) {
+        range.setStart(ctrlSel.start.node, ctrlSel.start.offset);
+        range.setEnd(endPoint.node, endPoint.offset);
+      } else {
+        range.setStart(endPoint.node, endPoint.offset);
+        range.setEnd(ctrlSel.start.node, ctrlSel.start.offset);
+      }
+      const sel = window.getSelection();
+      if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+    }
+
+    document.addEventListener('mousedown', (e) => {
+      // A new press always clears a stale suppress flag (the drag-ending click
+      // may never fire if the mouse was released outside the window).
+      suppressNextClick = false;
+      if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return;
+      // Don't hijack presses inside editable fields (search box etc.) —
+      // preventDefault there would block focusing/caret placement.
+      const t = e.target;
+      if (t && (t.isContentEditable ||
+          (t.closest && t.closest('input, textarea, select')))) return;
+      const point = caretFromPoint(e.clientX, e.clientY);
+      if (!point) return;
+      // preventDefault stops the browser from starting a link drag; the
+      // selection is managed manually from here on.
+      e.preventDefault();
+      ctrlSel = { start: point, x: e.clientX, y: e.clientY, moved: false };
+    }, true);
+
+    document.addEventListener('mousemove', (e) => {
+      if (!ctrlSel) return;
+      if (!ctrlSel.moved &&
+          Math.abs(e.clientX - ctrlSel.x) < DRAG_THRESHOLD_PX &&
+          Math.abs(e.clientY - ctrlSel.y) < DRAG_THRESHOLD_PX) return;
+      const point = caretFromPoint(e.clientX, e.clientY);
+      if (!point) return;
+      ctrlSel.moved = true;
+      applyCtrlRange(point);
+    }, true);
+
+    document.addEventListener('mouseup', (e) => {
+      if (!ctrlSel) return;
+      const wasDrag = ctrlSel.moved;
+      if (wasDrag) {
+        const point = caretFromPoint(e.clientX, e.clientY);
+        if (point) applyCtrlRange(point);
+        // Swallow the click that follows, so the anchor is not opened and the
+        // two-point Ctrl+click handler doesn't also fire for this drag.
+        suppressNextClick = true;
+        // The bubbling mouseup handler then shows the Send-to-WhatsApp button.
+      }
+      ctrlSel = null;
+    }, true);
+
+    document.addEventListener('dragstart', (e) => {
+      if (ctrlSel || e.ctrlKey || e.metaKey) e.preventDefault();
+    }, true);
+
+    document.addEventListener('click', (e) => {
+      if (!suppressNextClick) return;
+      suppressNextClick = false;
+      e.preventDefault();
+      e.stopPropagation();
     }, true);
 
     document.addEventListener('keydown', function(e) {
