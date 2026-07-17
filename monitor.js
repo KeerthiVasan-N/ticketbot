@@ -315,7 +315,7 @@ const WA_GAME_SCRIPT = `(function() {
     'use strict';
     if (document.getElementById('__wa_game_style')) return;
 
-    const INITIAL_SUFFIX = " find this brand name";
+    const INITIAL_SUFFIX = " identify the movie this image is from, give only the movie name";
 
     const style = document.createElement('style');
     style.id = '__wa_game_style';
@@ -1174,6 +1174,22 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
         removeSelectionBtn();
       }
     });
+
+    // While the "Send to WhatsApp" selection button is visible, Enter triggers
+    // it — same action as clicking. Capture phase so Google's own handlers
+    // don't see the keypress. Typing in the search box / AI follow-up field is
+    // left alone: Enter there must still submit that field.
+    document.addEventListener('keydown', async (e) => {
+      if (e.key !== 'Enter' || !selectionBtn) return;
+      const t = e.target;
+      if (t && (t.isContentEditable ||
+          (t.closest && t.closest('input, textarea, select, [contenteditable="true"]')))) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const text = capturedSelectionText;
+      removeSelectionBtn();
+      await sendSelectionToWhatsApp(false, text);
+    }, true);
 
     document.addEventListener('click', (e) => {
       if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return;
