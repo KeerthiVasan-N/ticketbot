@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell(node --check monitor.js)"
+      "PowerShell(node --check monitor.js)",
+      "PowerShell(node -e \"const s=require\\('fs'\\).readFileSync\\('monitor.js','utf8'\\); const i=s.indexOf\\('function cleanForSend'\\); const seg=s.slice\\(i,i+520\\); console.log\\(JSON.stringify\\(seg.split\\('\\\\n'\\).slice\\(0,10\\).join\\('\\\\n'\\)\\)\\)\")",
+      "PowerShell(node \"C:\\\\Users\\\\Keerthivasan\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-Keerthivasan-Projects-ticketbot\\\\8c2145e1-83ab-4d87-a582-6a2f077dbfb8\\\\scratchpad\\\\check-injected.js\")"
     ]
   }
 }

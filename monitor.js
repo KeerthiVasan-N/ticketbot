@@ -808,18 +808,34 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
         #tb-selection-send {
           position: fixed; z-index: 2147483647;
           background: #1f2937; color: #fff;
-          border: 1px solid #3b82f6; border-radius: 999px;
-          padding: 6px 10px; font-size: 12px; font-family: sans-serif;
+          border: 1px solid #3b82f6; border-radius: 10px;
+          padding: 8px 12px; font-size: 12px; font-family: sans-serif;
           box-shadow: 0 2px 8px rgba(0,0,0,0.25);
           cursor: pointer; user-select: none;
+          max-width: 340px; text-align: left;
         }
         #tb-selection-send:hover { background: #111827; }
+        #tb-selection-preview {
+          color: #a8e6cf; font-size: 12px; line-height: 1.4;
+          display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+          overflow: hidden; word-break: break-word; white-space: normal;
+          margin-bottom: 6px;
+        }
+        #tb-selection-label { color: #fff; font-weight: bold; font-size: 12px; }
+        #tb-ctrl-caret {
+          position: absolute; z-index: 2147483647; width: 2px;
+          background: #e94560; pointer-events: none; border-radius: 1px;
+          box-shadow: 0 0 4px rgba(233, 69, 96, 0.8);
+          animation: tb-caret-blink 1s step-end infinite;
+        }
+        @keyframes tb-caret-blink { 50% { opacity: 0; } }
     \`;
     document.head.appendChild(style);
 
-      async function sendToWhatsApp(textToCopy, closeTabAfter, elementToFlash, shouldSend) {
-        if (!textToCopy || !textToCopy.trim()) return;
-        const cleanedText = String(textToCopy)
+      // Single source of truth for how outgoing text is normalized \u2014 the
+      // selection-button preview must show exactly what will be sent.
+      function cleanForSend(textToCopy) {
+        return String(textToCopy)
           .replace(/[\u200B-\u200D\uFEFF]/g, '')
           .replace(/\u00A0/g, ' ')
           .replace(/\\s*,\\s*/g, ', ')
@@ -828,6 +844,11 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
           .replace(/^["""'''\u2018\u2019\u201C\u201D]+/, '')
           .replace(/["""'''\u2018\u2019\u201C\u201D]+$/, '')
           .trim();
+      }
+
+      async function sendToWhatsApp(textToCopy, closeTabAfter, elementToFlash, shouldSend) {
+        if (!textToCopy || !textToCopy.trim()) return;
+        const cleanedText = cleanForSend(textToCopy);
         if (!cleanedText) return;
         try {
           await navigator.clipboard.writeText(cleanedText);
@@ -935,7 +956,12 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
         const boldTags = document.querySelectorAll('b, strong');
         boldTags.forEach(tag => {
             if (tag.dataset.tbCopyAdded ||
-                !tag.innerText.trim() || tag.innerText.length > 50 || tag.closest('#tb-selection-send')) return;
+                !tag.innerText.trim() || tag.innerText.length > 50 ||
+                tag.closest('#tb-selection-send') ||
+                // Inside a whole-answer line the container already has its
+                // single pair — per-word icons there are just noise.
+                tag.closest('[data-tb-whole-answer]') ||
+                tag.classList.contains('game-highlight')) return;
             tag.dataset.tbCopyAdded = 'true';
             const actionRow = document.createElement('span');
             actionRow.className = 'quick-copy-row';
@@ -1002,11 +1028,130 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
                 element.insertBefore(actionRow, element.firstChild);
             });
         });
+
+        // 4. AI Mode / plain-text answers. AI Mode has no <b> tags or stable
+        // snippet classes to hook (its class names are obfuscated and churn),
+        // so detect the ANSWER LINE by shape: the innermost block element
+        // whose WHOLE text reads like one short comma-separated list — and
+        // give that container a single icon pair, never its individual words.
+        const attachIconPair = (el) => {
+            const row = document.createElement('span');
+            row.className = 'quick-copy-row';
+            const paste = document.createElement('span');
+            paste.innerHTML = '📥';
+            paste.className = 'quick-copy-btn';
+            paste.title = 'Paste to WhatsApp (no send)';
+            paste.onclick = async (e) => {
+                e.preventDefault(); e.stopPropagation();
+                await sendToWhatsApp(getElementTextWithoutButtons(el), false, paste, false);
+            };
+            const send = document.createElement('span');
+            send.innerHTML = '✅';
+            send.className = 'quick-copy-btn';
+            send.title = 'Paste & Send to WhatsApp';
+            send.onclick = async (e) => {
+                e.preventDefault(); e.stopPropagation();
+                await sendToWhatsApp(getElementTextWithoutButtons(el), false, send, true);
+            };
+            row.appendChild(paste);
+            row.appendChild(send);
+            el.appendChild(row);
+        };
+
+        // Anchor on the commas themselves: in every answer layout (plain
+        // text, bold spans, links, lines with source chips) the commas
+        // BETWEEN list items are text nodes sitting directly in the answer
+        // line, so the nearest block ancestor of a comma text node IS the
+        // line. This finds lines that contain inline blocks (chips, link
+        // wrappers) without ever running textContent on page wrappers.
+        const seenBlocks = new Set();
+        const listCandidates = [];
+        const commaWalker = document.createTreeWalker(
+            document.body, NodeFilter.SHOW_TEXT, {
+                acceptNode: (n) => (n.nodeValue && n.nodeValue.indexOf(',') !== -1)
+                    ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+            });
+        for (let n = commaWalker.nextNode(); n; n = commaWalker.nextNode()) {
+            let el = n.parentElement;
+            while (el && el !== document.body &&
+                   el.tagName !== 'DIV' && el.tagName !== 'P' && el.tagName !== 'LI') {
+                el = el.parentElement;
+            }
+            if (!el || el === document.body || seenBlocks.has(el)) continue;
+            seenBlocks.add(el);
+            if (el.dataset.tbCopyAdded) continue;
+            if (el.closest('#tb-selection-send, .quick-copy-row, .quick-copy-btn')) continue;
+            if (el.closest('input, textarea, select, [contenteditable="true"], [role="listbox"], [role="menu"], #result-stats')) continue;
+            // textContent, not innerText: innerText forces a reflow per node,
+            // far too slow to run on every mutation pass. Strip any icon
+            // emojis already present so they don't skew the length check.
+            const text = (el.textContent || '').replace(/[📥✅]/g, '').replace(/\s+/g, ' ').trim();
+            if (!text || text.length < 5 || text.length > 250) continue;
+            // Must look like an actual LIST, not prose that happens to contain
+            // commas: 3+ segments and every segment short. Prose ("movie
+            // Sirai, starring Vikram Prabhu. The beautiful melody is
+            // composed by…") has long segments and must never be claimed —
+            // claiming it also suppresses the bold-tag icons inside it.
+            const segments = text.split(',');
+            if (segments.length < 3) continue;
+            if (segments.some(s => s.trim().length > 40)) continue;
+            listCandidates.push(el);
+        }
+
+        listCandidates.forEach(el => {
+            // Innermost match only — the tightest block around the list is the
+            // answer line; its ancestors carry the same text plus chrome.
+            if (listCandidates.some(other => other !== el && el.contains(other))) return;
+            el.dataset.tbCopyAdded = 'true';
+            el.setAttribute('data-tb-whole-answer', 'true');
+            // One pair for the whole line: sweep out any per-word icons that
+            // attached before the full list had streamed in.
+            el.querySelectorAll('.quick-copy-row').forEach(r => r.remove());
+            attachIconPair(el);
+        });
     };
 
         let selectionBtn = null;
         let capturedSelectionText = '';
         let ctrlRangeStart = null;
+        // Ctrl+click range flow: click 1 shows a blinking caret at the start
+        // point, click 2 applies the full selection, and releasing Ctrl sends.
+        let ctrlRangePending = false;
+        let ctrlCaretEl = null;
+
+        function removeCtrlCaret() {
+          if (ctrlCaretEl && ctrlCaretEl.parentNode) {
+            ctrlCaretEl.parentNode.removeChild(ctrlCaretEl);
+          }
+          ctrlCaretEl = null;
+        }
+
+        function showCtrlCaret(point) {
+          let rect = null;
+          try {
+            const r = document.createRange();
+            r.setStart(point.node, point.offset);
+            r.collapse(true);
+            rect = r.getBoundingClientRect();
+          } catch (_) {}
+          // A collapsed range at an element boundary can report a zero rect —
+          // fall back to the nearest element's box so the line still shows.
+          if (!rect || (!rect.height && !rect.top && !rect.left)) {
+            const el = point.node.nodeType === 3 ? point.node.parentNode : point.node;
+            if (el && el.getBoundingClientRect) rect = el.getBoundingClientRect();
+          }
+          if (!rect) return;
+          if (!ctrlCaretEl) {
+            ctrlCaretEl = document.createElement('div');
+            ctrlCaretEl.id = 'tb-ctrl-caret';
+            document.body.appendChild(ctrlCaretEl);
+          }
+          // position:absolute (not fixed) so the caret stays glued to the text
+          // if the page scrolls between the two clicks.
+          ctrlCaretEl.style.left = (rect.left + window.scrollX) + 'px';
+          ctrlCaretEl.style.top = (rect.top + window.scrollY) + 'px';
+          ctrlCaretEl.style.height = (rect.height || 18) + 'px';
+        }
         function removeSelectionBtn() {
           if (selectionBtn && selectionBtn.parentNode) {
             selectionBtn.parentNode.removeChild(selectionBtn);
@@ -1072,9 +1217,12 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
             selection.addRange(range);
           }
 
+          removeCtrlCaret();
           const picked = (range.toString() || '').replace(/\s+/g, ' ').trim();
           if (picked) {
-            await sendSelectionToWhatsApp(false);
+            // Don't send yet — the selection stays highlighted on screen and
+            // the send fires on Ctrl keyup (see the keyup handler below).
+            ctrlRangePending = true;
           }
         }
 
@@ -1105,7 +1253,13 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
             selectionBtn = document.createElement('button');
             selectionBtn.id = 'tb-selection-send';
             selectionBtn.type = 'button';
-            selectionBtn.textContent = 'Send to WhatsApp';
+            const previewEl = document.createElement('div');
+            previewEl.id = 'tb-selection-preview';
+            const labelEl = document.createElement('div');
+            labelEl.id = 'tb-selection-label';
+            labelEl.textContent = '📤 Send to WhatsApp (Enter ↵)';
+            selectionBtn.appendChild(previewEl);
+            selectionBtn.appendChild(labelEl);
             selectionBtn.addEventListener('mousedown', (e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -1118,6 +1272,11 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
             });
             document.body.appendChild(selectionBtn);
           }
+
+          // Live preview of exactly what a click / Enter will send (same
+          // cleaning as the send path), refreshed on every selection change.
+          const previewNode = selectionBtn.querySelector('#tb-selection-preview');
+          if (previewNode) previewNode.textContent = cleanForSend(capturedSelectionText);
 
           // #tb-selection-send is position:fixed, so it must be placed in
           // viewport coordinates (getBoundingClientRect is already viewport
@@ -1143,6 +1302,13 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
     // retrigger it in a tight loop.
     let isSelecting = false;
     let iconScheduled = false;
+    // characterData + attributes matter too: AI Overview reveals its text via
+    // in-place text/attribute mutations (mark-highlight animations) that add
+    // no nodes, so a childList-only observer never sees the final answer.
+    const OBSERVE_OPTS = {
+      childList: true, subtree: true, characterData: true,
+      attributes: true, attributeFilter: ['style', 'class', 'hidden'],
+    };
     function scheduleIcons() {
       if (isSelecting || iconScheduled) return;
       iconScheduled = true;
@@ -1151,12 +1317,15 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
         if (isSelecting) return;
         observer.disconnect();
         try { addCopyIcons(); } catch (_) {}
-        observer.observe(document.body, { childList: true, subtree: true });
+        observer.observe(document.body, OBSERVE_OPTS);
       });
     }
     const observer = new MutationObserver(scheduleIcons);
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, OBSERVE_OPTS);
     addCopyIcons();
+    // Belt-and-braces: a slow rescan catches anything revealed in a way the
+    // observer configuration still misses.
+    setInterval(scheduleIcons, 1500);
 
     document.addEventListener('mousedown', () => { isSelecting = true; }, true);
     document.addEventListener('mouseup', () => {
@@ -1205,10 +1374,26 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
 
       if (!ctrlRangeStart) {
         ctrlRangeStart = point;
+        showCtrlCaret(point);
         return;
       }
 
       sendCtrlClickRange(point);
+    }, true);
+
+    // Releasing Ctrl commits the Ctrl+click range: if both points were placed
+    // the highlighted selection is sent; if only the start caret was placed
+    // the flow is cancelled. Drag selections are unaffected (they never set
+    // ctrlRangePending) and keep their Send-to-WhatsApp card flow.
+    document.addEventListener('keyup', (e) => {
+      if (e.key !== 'Control' && e.key !== 'Meta') return;
+      removeCtrlCaret();
+      ctrlRangeStart = null;
+      if (!ctrlRangePending) return;
+      ctrlRangePending = false;
+      removeSelectionBtn();
+      const picked = getSelectedText();
+      if (picked) sendSelectionToWhatsApp(false);
     }, true);
 
     // ── Ctrl+drag: select exactly the dragged text, even inside links ───────
@@ -1240,7 +1425,13 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
       // A new press always clears a stale suppress flag (the drag-ending click
       // may never fire if the mouse was released outside the window).
       suppressNextClick = false;
-      if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return;
+      if (!(e.ctrlKey || e.metaKey) || e.button !== 0) {
+        // A plain click abandons any half-built Ctrl+click range.
+        ctrlRangeStart = null;
+        ctrlRangePending = false;
+        removeCtrlCaret();
+        return;
+      }
       // Don't hijack presses inside editable fields (search box etc.) —
       // preventDefault there would block focusing/caret placement.
       const t = e.target;
@@ -1295,6 +1486,10 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
         const picked = getSelectedText();
         if (picked) {
           e.preventDefault();
+          // Already sent — the pending Ctrl+click range must not fire a
+          // duplicate send when Ctrl is released a moment later.
+          ctrlRangePending = false;
+          removeCtrlCaret();
           sendSelectionToWhatsApp(false);
           removeSelectionBtn();
         }
