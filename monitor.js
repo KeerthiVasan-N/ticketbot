@@ -345,7 +345,7 @@ const WA_GAME_SCRIPT = `(function() {
             background: #202c33; border: 2px solid #00a884; border-radius: 12px;
             padding: 0; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
             font-family: sans-serif; color: #fff;
-            width: 340px; min-width: 220px; min-height: 110px;
+            width: 480px; min-width: 220px; min-height: 110px;
             display: flex; flex-direction: column;
             resize: both; overflow: auto;
         }
@@ -421,6 +421,15 @@ const WA_GAME_SCRIPT = `(function() {
             background: #00a884; border-color: #00a884; color: #fff;
         }
         #game-helper-bracket-toggle:hover:not(.active) { border-color: #00a884; color: #00a884; }
+        #game-helper-ctx-toggle {
+            background: none; border: 1px solid #555; color: #8696a0; border-radius: 4px;
+            padding: 2px 6px; font-size: 10px; cursor: pointer; font-weight: bold;
+            margin-right: 6px; transition: background 0.15s, color 0.15s, border-color 0.15s; outline: none;
+        }
+        #game-helper-ctx-toggle.active {
+            background: #4dd0e1; border-color: #4dd0e1; color: #111;
+        }
+        #game-helper-ctx-toggle:hover:not(.active) { border-color: #4dd0e1; color: #4dd0e1; }
     \`;
     document.head.appendChild(style);
 
@@ -432,6 +441,7 @@ const WA_GAME_SCRIPT = `(function() {
             <div style="display: flex; align-items: center;">
             <button id="game-helper-oneline-toggle" title="Override suffix: ask for the answer as a single line of comma-separated text">1️⃣</button>
             <button id="game-helper-ai-toggle" title="Always open Google in AI Mode">AI</button>
+                <button id="game-helper-ctx-toggle" title="Context mode: reuse ONE Google AI Mode conversation tab (next to WhatsApp) for every question — text and images — instead of opening a new tab each time">Ctx</button>
                 <button id="game-helper-num-toggle" title="Strip leading number (e.g. 1) from copied text">#</button>
                 <button id="game-helper-bracket-toggle" title="Wrap copied text in quotes: &quot;text&quot;suffix">" "</button>
                 <button id="game-helper-close-all" title="Close other tabs except WhatsApp">Close All</button>
@@ -454,7 +464,7 @@ const WA_GAME_SCRIPT = `(function() {
 
     // 1️⃣ Single-line mode: while ON the suffix box is ignored and every search
     // uses this fixed instruction instead.
-    const ONE_LINE_SUFFIX = ' Provide the answer as a single line of comma-separated text, with no bullet points or extra conversational text';
+    const ONE_LINE_SUFFIX = ' Provide the answer as a single line of comma-separated text, with no bullet points or extra conversational text, in plain text without bold or links';
     let oneLineEnabled = false;
     function activeSuffix() {
       return oneLineEnabled ? ONE_LINE_SUFFIX : suffixInput.value;
@@ -490,6 +500,27 @@ const WA_GAME_SCRIPT = `(function() {
           : 'Always open Google in AI Mode';
       };
       aiToggleBtn.onmousedown = (e) => { e.stopPropagation(); };
+    }
+
+    let ctxModeEnabled = false;
+    const ctxToggleBtn = document.getElementById('game-helper-ctx-toggle');
+    if (ctxToggleBtn) {
+      ctxToggleBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        ctxModeEnabled = !ctxModeEnabled;
+        ctxToggleBtn.classList.toggle('active', ctxModeEnabled);
+        ctxToggleBtn.textContent = ctxModeEnabled ? 'Ctx ON' : 'Ctx';
+        ctxToggleBtn.title = ctxModeEnabled
+          ? 'Context mode ON — every question (text & image) goes into the single AI Mode conversation tab'
+          : 'Context mode: reuse ONE Google AI Mode conversation tab (next to WhatsApp) for every question — text and images — instead of opening a new tab each time';
+        // Open + prime the conversation tab now, so the first question goes in
+        // on its own rather than alongside the priming prompt.
+        if (ctxModeEnabled && window.__tb_contextInit) {
+          window.__tb_contextInit().catch(() => {});
+        }
+      };
+      ctxToggleBtn.onmousedown = (e) => { e.stopPropagation(); };
     }
 
     let numStripEnabled = false;
@@ -543,6 +574,7 @@ const WA_GAME_SCRIPT = `(function() {
         titlebar.addEventListener('mousedown', function(e) {
             if (e.target.id === 'game-helper-close-all') return;
           if (e.target.id === 'game-helper-ai-toggle') return;
+            if (e.target.id === 'game-helper-ctx-toggle') return;
             if (e.target.id === 'game-helper-oneline-toggle') return;
             if (e.target.id === 'game-helper-num-toggle') return;
             if (e.target.id === 'game-helper-bracket-toggle') return;
@@ -649,6 +681,10 @@ const WA_GAME_SCRIPT = `(function() {
                 let finalSearchQuery = bracketWrapEnabled ? '"' + cleanText + '"' + suffix : cleanText + suffix;
                 try { await navigator.clipboard.writeText(finalSearchQuery); } catch (err) {}
                 lastLabel.textContent = '🔍 ' + finalSearchQuery;
+                if (ctxModeEnabled) {
+                    window.__tb_contextAsk(finalSearchQuery, false);
+                    return;
+                }
                 const searchUrl = new URL('https://www.google.com/search');
                 searchUrl.searchParams.set('q', finalSearchQuery);
                 if (aiModeEnabled) {
@@ -719,7 +755,11 @@ const WA_GAME_SCRIPT = `(function() {
                         btn.innerHTML = originalIcon;
                         btn.style.pointerEvents = '';
                         lastLabel.textContent = '🔍 Searching image…';
-                        window.__tb_openLensTab(activeSuffix(), mode);
+                        if (ctxModeEnabled) {
+                            window.__tb_contextAsk(activeSuffix(), true);
+                        } else {
+                            window.__tb_openLensTab(activeSuffix(), mode);
+                        }
                         // keep locked for 8 s so copy-answer click can't re-trigger a search
                         setTimeout(() => { busy = false; }, 8000);
                     };
@@ -897,6 +937,31 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
       }
 
     const addCopyIcons = () => {
+        // Shared Paste + Send-to-WhatsApp control used for every whole-answer
+        // pair across the app (featured snippets, AI Mode lists, AI Mode short
+        // answers) so the look and behaviour are identical everywhere. Both
+        // buttons act on the WHOLE answer text via getText() at click time.
+        const makePasteSendRow = (getText) => {
+            const row = document.createElement('span');
+            row.className = 'quick-copy-row';
+            const mk = (icon, title, send) => {
+                const b = document.createElement('span');
+                b.className = 'quick-copy-btn';
+                b.innerHTML = icon;
+                b.title = title;
+                b.onclick = async (e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    await sendToWhatsApp(getText(), false, b, send);
+                };
+                return b;
+            };
+            // Order: Send first, Paste next. Compact emoji style (default
+            // .quick-copy-btn look) — no big coloured labels.
+            row.appendChild(mk('✅', 'Paste & Send to WhatsApp', true));
+            row.appendChild(mk('📥', 'Paste to WhatsApp (no send)', false));
+            return row;
+        };
+
         // 1. Identify and highlight the exact search terms/question terms from the URL if present
         try {
             const urlParams = new URLSearchParams(window.location.search);
@@ -1001,30 +1066,9 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
                 if (element.querySelector('.quick-copy-btn') || element.closest('#tb-selection-send')) return;
                 
                 element.classList.add('game-snippet-answered');
-                
-                const actionRow = document.createElement('span');
-                actionRow.className = 'quick-copy-row';
-                actionRow.style.cssText = "margin-bottom: 6px;";
-                const pasteBtn = document.createElement('span');
-                pasteBtn.innerHTML = '📥';
-                pasteBtn.className = 'quick-copy-btn';
-                pasteBtn.style.cssText = "font-weight: bold; background: #3b82f6; color: white; padding: 3px 8px;";
-                pasteBtn.title = 'Paste to WhatsApp (no send)';
-                pasteBtn.onclick = async (e) => {
-                    e.preventDefault(); e.stopPropagation();
-                    await sendToWhatsApp(getElementTextWithoutButtons(element), false, pasteBtn, false);
-                };
-                const sendBtn = document.createElement('span');
-                sendBtn.innerHTML = '✅';
-                sendBtn.className = 'quick-copy-btn';
-                sendBtn.style.cssText = "font-weight: bold; background: #34a853; color: white; padding: 3px 8px;";
-                sendBtn.title = 'Paste & Send to WhatsApp';
-                sendBtn.onclick = async (e) => {
-                    e.preventDefault(); e.stopPropagation();
-                    await sendToWhatsApp(getElementTextWithoutButtons(element), false, sendBtn, true);
-                };
-                actionRow.appendChild(pasteBtn);
-                actionRow.appendChild(sendBtn);
+
+                const actionRow = makePasteSendRow(() => getElementTextWithoutButtons(element));
+                actionRow.style.marginBottom = '6px';
                 element.insertBefore(actionRow, element.firstChild);
             });
         });
@@ -1034,28 +1078,20 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
         // so detect the ANSWER LINE by shape: the innermost block element
         // whose WHOLE text reads like one short comma-separated list — and
         // give that container a single icon pair, never its individual words.
-        const attachIconPair = (el) => {
-            const row = document.createElement('span');
-            row.className = 'quick-copy-row';
-            const paste = document.createElement('span');
-            paste.innerHTML = '📥';
-            paste.className = 'quick-copy-btn';
-            paste.title = 'Paste to WhatsApp (no send)';
-            paste.onclick = async (e) => {
-                e.preventDefault(); e.stopPropagation();
-                await sendToWhatsApp(getElementTextWithoutButtons(el), false, paste, false);
-            };
-            const send = document.createElement('span');
-            send.innerHTML = '✅';
-            send.className = 'quick-copy-btn';
-            send.title = 'Paste & Send to WhatsApp';
-            send.onclick = async (e) => {
-                e.preventDefault(); e.stopPropagation();
-                await sendToWhatsApp(getElementTextWithoutButtons(el), false, send, true);
-            };
-            row.appendChild(paste);
-            row.appendChild(send);
-            el.appendChild(row);
+        const attachIconPair = (el, anchorNode) => {
+            const row = makePasteSendRow(() => getElementTextWithoutButtons(el));
+            // Place the pair right after the answer-text child of el so it sits
+            // NEXT TO the line — not at the bottom of the block, which also
+            // holds Google's copy/share/like action bar (a separate child).
+            // Walk up from the text node to the direct child of el, then insert
+            // the pair immediately after it (before the action-bar child).
+            let child = anchorNode || null;
+            while (child && child.parentNode !== el) child = child.parentNode;
+            if (child && child.parentNode === el) {
+                el.insertBefore(row, child.nextSibling);
+            } else {
+                el.appendChild(row);
+            }
         };
 
         // Anchor on the commas themselves: in every answer layout (plain
@@ -1092,22 +1128,56 @@ const GOOGLE_AUTOTYPER_SCRIPT = `(function() {
             // Sirai, starring Vikram Prabhu. The beautiful melody is
             // composed by…") has long segments and must never be claimed —
             // claiming it also suppresses the bold-tag icons inside it.
+            // Cap is 60, not 40: real titles run long ("The Lord of the
+            // Rings: The Rings of Power" is 41 chars) and one over-long
+            // segment used to reject the whole line, leaving per-word icons.
             const segments = text.split(',');
             if (segments.length < 3) continue;
-            if (segments.some(s => s.trim().length > 40)) continue;
-            listCandidates.push(el);
+            if (segments.some(s => s.trim().length > 60)) continue;
+            listCandidates.push({ el, anchor: n });
         }
 
-        listCandidates.forEach(el => {
+        listCandidates.forEach(({ el, anchor }) => {
             // Innermost match only — the tightest block around the list is the
             // answer line; its ancestors carry the same text plus chrome.
-            if (listCandidates.some(other => other !== el && el.contains(other))) return;
+            if (listCandidates.some(o => o.el !== el && el.contains(o.el))) return;
             el.dataset.tbCopyAdded = 'true';
             el.setAttribute('data-tb-whole-answer', 'true');
             // One pair for the whole line: sweep out any per-word icons that
             // attached before the full list had streamed in.
             el.querySelectorAll('.quick-copy-row').forEach(r => r.remove());
-            attachIconPair(el);
+            attachIconPair(el, anchor);
+        });
+
+        // 4b. AI Mode SHORT answers (single item or 2 items). With the
+        // plain-text primer, answers carry no <b> tags (so section 2 adds
+        // nothing) and a 1–2 item answer has too few commas for section 4 —
+        // so it would get NO icons at all. AI Mode wraps its answer text in a
+        // subtree marker (data-subtree, e.g. "aimfl"); anchor on that and give
+        // each answer block one pair regardless of comma count. Scoped to the
+        // marker so ordinary result pages (which have no data-subtree) match
+        // nothing.
+        document.querySelectorAll('[data-subtree]').forEach(node => {
+            // Climb to the nearest block — that div is the answer line itself
+            // (holds just the answer text, not the question bubble).
+            let el = node;
+            while (el && el !== document.body &&
+                   el.tagName !== 'DIV' && el.tagName !== 'P' && el.tagName !== 'LI') {
+                el = el.parentElement;
+            }
+            if (!el || el === document.body) el = node;
+            if (el.dataset.tbCopyAdded) return; // already claimed by section 4
+            if (el.closest('#tb-selection-send, .quick-copy-row, .quick-copy-btn')) return;
+            if (el.closest('input, textarea, select, [contenteditable="true"], [role="listbox"], [role="menu"]')) return;
+            const text = (el.textContent || '').replace(/[📥✅]/g, '').replace(/\s+/g, ' ').trim();
+            // Answer-shaped only: short. Skip long multi-sentence prose so a
+            // paragraph answer isn't claimed as one line.
+            if (!text || text.length < 2 || text.length > 200) return;
+            // A descendant already got a pair from section 4 — don't add a 2nd.
+            if (el.querySelector('[data-tb-whole-answer], .quick-copy-row')) return;
+            el.dataset.tbCopyAdded = 'true';
+            el.setAttribute('data-tb-whole-answer', 'true');
+            attachIconPair(el, node);
         });
     };
 
@@ -1508,6 +1578,57 @@ async function runWhatsAppGameMode(context, page) {
   );
   console.log("  Click 🔍 on any image to open Google Lens.\n");
 
+  // ── Context mode: one persistent Google AI Mode conversation tab ──────────
+  // Every Ctx-mode question (text or image) is typed into the SAME AI Mode
+  // conversation, so Google keeps the formatting instruction + chat context and
+  // no new tab has to be opened per question.
+  let ctxTab = null;
+  const CTX_PRIMER =
+    "For every question I ask in this conversation, reply with only the direct answer as a single line of comma-separated text, with no bullet points and no extra conversational text. Write it as plain text only - never use bold, italics, links, or any other formatting on the items.";
+
+  // The follow-up composer at the bottom of an AI Mode conversation.
+  const ctxAskBox = (pg) =>
+    pg
+      .locator(
+        'textarea[placeholder*="Ask" i], textarea[aria-label*="Ask" i], div[contenteditable="true"][role="textbox"]',
+      )
+      .last();
+
+  // Guards against two concurrent callers (e.g. the Ctx toggle and a fast first
+  // question) each opening their own conversation tab.
+  let ctxTabPending = null;
+
+  const ensureCtxTab = async () => {
+    if (ctxTab && !ctxTab.isClosed()) return ctxTab;
+    if (ctxTabPending) return ctxTabPending;
+    ctxTabPending = (async () => {
+      const tab = await context.newPage();
+      tab.on("close", () => {
+        if (ctxTab === tab) ctxTab = null;
+      });
+      ctxTab = tab;
+      // Opening AI Mode with the primer as the first query starts the
+      // conversation with the "comma-separated answers only" context already
+      // set.
+      const u = new URL("https://www.google.com/search");
+      u.searchParams.set("udm", "50");
+      u.searchParams.set("q", CTX_PRIMER);
+      await tab.goto(u.toString(), {
+        waitUntil: "domcontentloaded",
+        timeout: 30_000,
+      });
+      // Wait for the follow-up box so the first real question can be typed
+      // immediately after.
+      await ctxAskBox(tab)
+        .waitFor({ state: "visible", timeout: 20_000 })
+        .catch(() => {});
+      return tab;
+    })().finally(() => {
+      ctxTabPending = null;
+    });
+    return ctxTabPending;
+  };
+
   // Expose helper bridges that injected scripts can call
   const exposeOpenTab = async (p) => {
     try {
@@ -1885,6 +2006,92 @@ async function runWhatsAppGameMode(context, page) {
           // On failure, reveal whatever Lens has so the user isn't stuck.
           if (newPage) await newPage.bringToFront().catch(() => {});
           console.error(`[${ts()}] Failed to open Lens tab: ${err.message}`);
+        }
+      });
+    } catch (_) {
+      /* already exposed */
+    }
+    try {
+      // Called the moment Ctx mode is switched ON, so the conversation tab is
+      // opened and primed right away instead of the primer riding along with
+      // the first question. Stays in the background — the user is still reading
+      // WhatsApp at this point.
+      await p.exposeFunction("__tb_contextInit", async () => {
+        try {
+          await ensureCtxTab();
+        } catch (err) {
+          console.error(`[${ts()}] Context init failed: ${err.message}`);
+          try {
+            if (ctxTab && !ctxTab.isClosed()) await ctxTab.close();
+          } catch (_) {}
+          ctxTab = null;
+        }
+      });
+    } catch (_) {
+      /* already exposed */
+    }
+    try {
+      // Ctx mode: ask in the persistent AI Mode conversation tab.
+      //  - text  : __tb_contextAsk(question, false)
+      //  - image : __tb_contextAsk(suffix, true) — image is already on the
+      //            clipboard; it is pasted into the ask box before the suffix.
+      await p.exposeFunction("__tb_contextAsk", async (query, isImage) => {
+        try {
+          const tab = await ensureCtxTab();
+          // Foreground is required for the clipboard image paste, and the user
+          // reads the streamed answer here anyway.
+          await tab.bringToFront();
+
+          const box = ctxAskBox(tab);
+          await box.waitFor({ state: "visible", timeout: 15_000 });
+          await box.click({ timeout: 5_000 });
+
+          if (isImage) {
+            await tab.keyboard.press("Control+V");
+            // Wait for the pasted image chip to appear next to the composer.
+            await tab
+              .locator('img[src^="blob:"], img[src^="data:"]')
+              .last()
+              .waitFor({ state: "visible", timeout: 3_000 })
+              .catch(() => {});
+          }
+
+          if (query && query.trim()) {
+            await tab.keyboard.insertText(query.trim());
+            await tab.waitForTimeout(100);
+          }
+
+          // The composer can re-render while the image attaches — re-focus and
+          // retry Enter until the question is actually submitted (box empties).
+          for (let i = 0; i < 3; i++) {
+            await tab.keyboard.press("Enter");
+            const submitted = await tab
+              .waitForFunction(
+                () => {
+                  const els = document.querySelectorAll(
+                    'textarea[placeholder*="Ask" i], textarea[aria-label*="Ask" i], div[contenteditable="true"][role="textbox"]',
+                  );
+                  const el = els[els.length - 1];
+                  if (!el) return true;
+                  const val =
+                    el.tagName === "TEXTAREA" ? el.value : el.innerText;
+                  return !val || !val.trim();
+                },
+                { timeout: 2_000 },
+              )
+              .then(() => true)
+              .catch(() => false);
+            if (submitted) break;
+            await box.click({ timeout: 1_500 }).catch(() => {});
+          }
+        } catch (err) {
+          console.error(`[${ts()}] Context ask failed: ${err.message}`);
+          // Recycle the tab so the next click starts a fresh conversation
+          // instead of being stuck on a dead page.
+          try {
+            if (ctxTab && !ctxTab.isClosed()) await ctxTab.close();
+          } catch (_) {}
+          ctxTab = null;
         }
       });
     } catch (_) {
